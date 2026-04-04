@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "ts-node-dev --respawn --transpile-only src/bot.ts",
     "build": "tsc",
-    "start": "node dist/bot.js"
+    "start": "npm run build && node dist/bot.js"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.39.0",
