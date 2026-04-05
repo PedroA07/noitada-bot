@@ -13,6 +13,7 @@ import {
 import { iniciarBoasVindas } from './scripts/boasVindas';
 import { iniciarFilaCargos } from './scripts/filaCargos';
 import { iniciarMonitorDeStatus } from './monitorStatus';
+import { iniciarSpawnAutomatico } from './lib/spawnAutomatico';
 
 dotenv.config();
 
@@ -100,6 +101,7 @@ client.once('ready', async () => {
   iniciarBoasVindas(client);
   iniciarFilaCargos(client);
   iniciarMonitorDeStatus(client);
+  iniciarSpawnAutomatico(client);
 });
 
 // ============================================================
