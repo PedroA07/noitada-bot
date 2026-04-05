@@ -19,7 +19,7 @@ const EMOJI_RARIDADE: Record<string, string> = {
 };
 
 export const data = new SlashCommandBuilder()
-  .setName('carta')
+  .setName('pesquisar-carta')
   .setDescription('Pesquisa uma carta da coleção NOITADA')
   .addStringOption(option =>
     option.setName('tipo')
