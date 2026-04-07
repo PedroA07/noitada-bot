@@ -19,6 +19,8 @@ import ffmpeg from '@ffmpeg-installer/ffmpeg';
 import { createRequire } from 'module';
 process.env.FFMPEG_PATH = ffmpeg.path;
 
+dotenv.config();
+
 // Garante que o ffmpeg está disponível
 try {
   const ffmpegInstaller = require('@ffmpeg-installer/ffmpeg');
@@ -28,7 +30,6 @@ try {
   console.warn('ffmpeg-installer nao encontrado, usando ffmpeg do sistema');
 }
 
-dotenv.config();
 
 // ============================================================
 // Validação das variáveis obrigatórias
