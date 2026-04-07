@@ -1,16 +1,11 @@
 import { Client } from 'discord.js';
 import { supabase } from '../lib/supabase';
 
-/**
- * Fica escutando a tabela fila_cargos via Realtime do Supabase.
- * Quando o site insere uma tarefa pendente, o bot processa e entrega o cargo.
- */
 export const iniciarFilaCargos = (client: Client) => {
   const guildId = process.env.DISCORD_GUILD_ID!;
 
   console.log('👂 Escutando fila de cargos no Supabase...');
 
-  // Escuta inserções em tempo real na fila_cargos
   supabase
     .channel('fila-cargos')
     .on(
@@ -19,7 +14,7 @@ export const iniciarFilaCargos = (client: Client) => {
         event: 'INSERT',
         schema: 'public',
         table: 'fila_cargos',
-        filter: 'status=eq.pendente',
+        // REMOVIDO o filter — checaremos o status no código
       },
       async (payload) => {
         const tarefa = payload.new as {
@@ -29,13 +24,18 @@ export const iniciarFilaCargos = (client: Client) => {
           status: string;
         };
 
+        // Só processa se for pendente
+        if (tarefa.status !== 'pendente') return;
+
         console.log(`📋 Nova tarefa na fila: ${tarefa.acao} para ${tarefa.discord_id}`);
         await processarTarefa(client, tarefa, guildId);
       }
     )
-    .subscribe();
+    .subscribe((status) => {
+      console.log('📡 Realtime fila_cargos:', status);
+    });
 
-  // Ao iniciar, processa tarefas pendentes que possam ter ficado paradas
+  // Processa pendentes ao iniciar
   processarPendentes(client, guildId);
 };
 
@@ -50,7 +50,10 @@ async function processarPendentes(client: Client, guildId: string) {
     return;
   }
 
-  if (!pendentes || pendentes.length === 0) return;
+  if (!pendentes || pendentes.length === 0) {
+    console.log('✅ Nenhuma tarefa pendente no início.');
+    return;
+  }
 
   console.log(`⏳ Processando ${pendentes.length} tarefa(s) pendente(s)...`);
   for (const tarefa of pendentes) {
@@ -69,7 +72,6 @@ async function processarTarefa(
       return;
     }
 
-    // Busca o cargo membro configurado no painel
     const { data: config, error: configError } = await supabase
       .from('configuracoes_servidor')
       .select('cargo_membro_id')
@@ -82,7 +84,6 @@ async function processarTarefa(
       return;
     }
 
-    // Busca o servidor no cache do bot
     const guild = client.guilds.cache.get(guildId);
     if (!guild) {
       console.error('❌ Bot não está no servidor Discord.');
@@ -90,22 +91,19 @@ async function processarTarefa(
       return;
     }
 
-    // Busca o membro (pode não estar em cache, força fetch)
     const member = await guild.members.fetch(tarefa.discord_id).catch(() => null);
     if (!member) {
-      console.error(`❌ Membro ${tarefa.discord_id} não encontrado no servidor.`);
+      console.error(`❌ Membro ${tarefa.discord_id} não encontrado.`);
       await marcarStatus(tarefa.id, 'erro');
       return;
     }
 
-    // Entrega o cargo!
     await member.roles.add(config.cargo_membro_id);
     await marcarStatus(tarefa.id, 'concluido');
-
-    console.log(`✅ Cargo membro entregue para ${member.user.tag} (${tarefa.discord_id})`);
+    console.log(`✅ Cargo entregue para ${member.user.tag}`);
 
   } catch (error: any) {
-    console.error(`❌ Erro ao processar tarefa ${tarefa.id}:`, error.message);
+    console.error(`❌ Erro na tarefa ${tarefa.id}:`, error.message);
     await marcarStatus(tarefa.id, 'erro');
   }
 }
