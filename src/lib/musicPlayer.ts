@@ -1,4 +1,3 @@
-import youtubeDl from 'youtube-dl-exec';
 import {
   AudioPlayer,
   AudioPlayerStatus,
@@ -13,6 +12,7 @@ import {
 } from '@discordjs/voice';
 import { VoiceChannel, TextChannel, EmbedBuilder } from 'discord.js';
 import * as playdl from 'play-dl';
+import { spawn } from 'child_process';
 import { Readable } from 'stream';
 
 export interface Musica {
@@ -51,40 +51,35 @@ export function detectarFonte(url: string): 'youtube' | 'spotify' | 'soundcloud'
 }
 
 function streamViaYtDlp(url: string): Readable {
-  console.log('Iniciando stream para:', url);
-
-  const cookie = process.env.YOUTUBE_COOKIE;
+  const ytdlpPath = process.env.YTDLP_PATH || '/usr/local/bin/yt-dlp';
+  console.log('Iniciando yt-dlp em:', ytdlpPath, 'url:', url);
 
   const args: string[] = [
-    '--format', 'bestaudio[ext=webm]/bestaudio/best',
+    '-f', 'bestaudio/best',
     '--no-playlist',
+    '-o', '-',
     '--quiet',
     '--no-warnings',
-    '--output', '-',
   ];
 
+  const cookie = process.env.YOUTUBE_COOKIE;
   if (cookie) {
     args.push('--add-header', `Cookie:${cookie}`);
   }
 
-  const subprocess = youtubeDl.exec(url, {
-    format: 'bestaudio[ext=webm]/bestaudio/best',
-    noPlaylist: true,
-    quiet: true,
-    noWarnings: true,
-    output: '-',
-    addHeader: cookie ? [`Cookie:${cookie}`] : [],
+  args.push(url);
+
+  const ytdlp = spawn(ytdlpPath, args);
+
+  ytdlp.stderr.on('data', (data: Buffer) => {
+    console.error('yt-dlp:', data.toString().trim());
   });
 
-  subprocess.stderr?.on('data', (data: Buffer) => {
-    console.error('ytdl:', data.toString().trim());
+  ytdlp.on('error', (err: Error) => {
+    console.error('Erro yt-dlp:', err.message);
   });
 
-  subprocess.on('error', (err: Error) => {
-    console.error('Erro ytdl:', err.message);
-  });
-
-  return subprocess.stdout as unknown as Readable;
+  return ytdlp.stdout as unknown as Readable;
 }
 
 async function configurarTokens() {
@@ -214,7 +209,6 @@ export async function buscarMusica(query: string, solicitadoPor: string): Promis
       }
     }
 
-    // Busca por texto no YouTube
     const resultados = await playdl.search(query, { source: { youtube: 'video' }, limit: 10 });
     if (!resultados.length) throw new Error('Nenhum resultado encontrado.');
 
