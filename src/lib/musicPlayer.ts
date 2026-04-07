@@ -11,8 +11,7 @@ import {
   StreamType,
 } from '@discordjs/voice';
 import { VoiceChannel, TextChannel, EmbedBuilder } from 'discord.js';
-import * as playdl from 'play-dl';
-import { spawn } from 'child_process';
+import { spawn, execSync } from 'child_process';
 import { Readable } from 'stream';
 
 export interface Musica {
@@ -43,210 +42,172 @@ export function formatarDuracao(segundos: number): string {
   return `${m}:${s.toString().padStart(2, '0')}`;
 }
 
-export function detectarFonte(url: string): 'youtube' | 'spotify' | 'soundcloud' | null {
+export function detectarFonte(url: string): 'youtube' | 'spotify' | 'soundcloud' | 'texto' {
   if (url.includes('youtube.com') || url.includes('youtu.be')) return 'youtube';
   if (url.includes('spotify.com')) return 'spotify';
   if (url.includes('soundcloud.com')) return 'soundcloud';
-  return null;
+  return 'texto';
 }
 
-function streamViaYtDlp(url: string): Readable {
-  const ytdlpPath = process.env.YTDLP_PATH || '/usr/local/bin/yt-dlp';
-  console.log('Iniciando yt-dlp em:', ytdlpPath, 'url:', url);
+const ytdlpPath = process.env.YTDLP_PATH || '/usr/local/bin/yt-dlp';
 
+function getYtDlpBaseArgs(): string[] {
   const args: string[] = [
-    '-f', 'bestaudio/best',
-    '--no-playlist',
-    '-o', '-',
-    '--quiet',
     '--no-warnings',
+    '--quiet',
   ];
-
   const cookie = process.env.YOUTUBE_COOKIE;
   if (cookie) {
     args.push('--add-header', `Cookie:${cookie}`);
   }
+  return args;
+}
 
-  args.push(url);
+interface YtDlpInfo {
+  title: string;
+  webpage_url: string;
+  duration: number;
+  thumbnail: string;
+  entries?: YtDlpInfo[];
+}
+
+async function ytdlpGetInfo(query: string, isPlaylist = false): Promise<YtDlpInfo[]> {
+  return new Promise((resolve, reject) => {
+    const args = [
+      ...getYtDlpBaseArgs(),
+      '--dump-json',
+      '--flat-playlist',
+    ];
+
+    if (!isPlaylist) {
+      args.push('--no-playlist');
+    }
+
+    if (!query.startsWith('http')) {
+      args.push(`ytsearch1:${query}`);
+    } else {
+      args.push(query);
+    }
+
+    const proc = spawn(ytdlpPath, args);
+    let stdout = '';
+    let stderr = '';
+
+    proc.stdout.on('data', (d: Buffer) => { stdout += d.toString(); });
+    proc.stderr.on('data', (d: Buffer) => { stderr += d.toString(); });
+
+    proc.on('close', (code) => {
+      if (code !== 0 && !stdout) {
+        return reject(new Error(`yt-dlp falhou (code ${code}): ${stderr.trim()}`));
+      }
+      try {
+        const linhas = stdout.trim().split('\n').filter(Boolean);
+        const infos = linhas.map(l => JSON.parse(l));
+        resolve(infos);
+      } catch (e) {
+        reject(new Error('Falha ao parsear JSON do yt-dlp'));
+      }
+    });
+
+    proc.on('error', (e) => reject(new Error(`Erro ao iniciar yt-dlp: ${e.message}`)));
+  });
+}
+
+function streamViaYtDlp(url: string): Readable {
+  console.log('Iniciando stream yt-dlp:', url);
+
+  const args = [
+    ...getYtDlpBaseArgs(),
+    '-f', 'bestaudio/best',
+    '--no-playlist',
+    '-o', '-',
+    url,
+  ];
 
   const ytdlp = spawn(ytdlpPath, args);
 
   ytdlp.stderr.on('data', (data: Buffer) => {
-    console.error('yt-dlp:', data.toString().trim());
+    const msg = data.toString().trim();
+    if (msg) console.error('yt-dlp stderr:', msg);
   });
 
   ytdlp.on('error', (err: Error) => {
-    console.error('Erro yt-dlp:', err.message);
+    console.error('Erro yt-dlp spawn:', err.message);
   });
 
   return ytdlp.stdout as unknown as Readable;
 }
 
-async function configurarTokens() {
-  const clientId = process.env.SPOTIFY_CLIENT_ID;
-  const clientSecret = process.env.SPOTIFY_CLIENT_SECRET;
-  const refreshToken = process.env.SPOTIFY_REFRESH_TOKEN;
-
-  if (clientId && clientSecret && refreshToken) {
-    await playdl.setToken({
-      spotify: {
-        client_id: clientId,
-        client_secret: clientSecret,
-        refresh_token: refreshToken,
-        market: 'BR',
-      },
-    });
-    console.log('Spotify configurado!');
-  }
-
-  const youtubeCookie = process.env.YOUTUBE_COOKIE;
-  if (youtubeCookie) {
-    await playdl.setToken({
-      youtube: { cookie: youtubeCookie },
-    });
-    console.log('YouTube cookie configurado!');
-  } else {
-    console.warn('YOUTUBE_COOKIE nao configurado.');
-  }
-}
-
-configurarTokens();
-
 export async function buscarMusica(query: string, solicitadoPor: string): Promise<Musica[]> {
   const fonte = detectarFonte(query);
 
   try {
+    // Spotify — converte para busca no YouTube
     if (fonte === 'spotify') {
-      if (playdl.is_expired()) await playdl.refreshToken();
+      console.log('Detectado Spotify, buscando via yt-dlp...');
+      const isPlaylist = query.includes('/playlist/') || query.includes('/album/');
 
-      try {
-        const spotifyInfo = await playdl.spotify(query);
+      const infos = await ytdlpGetInfo(query, isPlaylist);
 
-        if (spotifyInfo.type === 'track') {
-          const track = spotifyInfo as any;
-          const termoBusca = `${track.name} ${track.artists?.[0]?.name || ''}`;
-          console.log('Buscando track Spotify:', termoBusca);
-          const busca = await playdl.search(termoBusca, { source: { youtube: 'video' }, limit: 5 });
-          const resultado = busca.find((r: any) => r.url && r.url.startsWith('https://www.youtube.com/watch'));
-          if (!resultado) throw new Error('Musica nao encontrada no YouTube');
-          return [{
-            titulo: track.name,
-            url: resultado.url,
-            duracao: formatarDuracao(track.durationInSec || 0),
-            thumbnail: track.thumbnail?.url || null,
-            solicitadoPor,
-            fonte: 'spotify',
-          }];
-        }
+      if (!infos.length) throw new Error('Nenhum resultado Spotify encontrado');
 
-        if (spotifyInfo.type === 'playlist' || spotifyInfo.type === 'album') {
-          const lista = spotifyInfo as any;
-          console.log('Buscando playlist/album Spotify...');
-          const tracks = await lista.all_tracks();
-          console.log('Total de tracks:', tracks.length);
-          const musicas: Musica[] = [];
-          for (const track of tracks.slice(0, 50)) {
-            try {
-              const termoBusca = `${track.name} ${track.artists?.[0]?.name || ''}`;
-              const busca = await playdl.search(termoBusca, { source: { youtube: 'video' }, limit: 5 });
-              const resultado = busca.find((r: any) => r.url && r.url.startsWith('https://www.youtube.com/watch'));
-              if (resultado) {
-                musicas.push({
-                  titulo: track.name,
-                  url: resultado.url,
-                  duracao: formatarDuracao(track.durationInSec || 0),
-                  thumbnail: track.thumbnail?.url || null,
-                  solicitadoPor,
-                  fonte: 'spotify',
-                });
-              }
-            } catch (e) {
-              console.warn('Erro ao buscar track:', track.name, e);
-            }
-          }
-          if (!musicas.length) throw new Error('Nenhuma musica da playlist encontrada no YouTube');
-          return musicas;
-        }
+      const musicas: Musica[] = infos.slice(0, 50).map(info => ({
+        titulo: info.title || 'Sem titulo',
+        url: info.webpage_url || query,
+        duracao: formatarDuracao(info.duration || 0),
+        thumbnail: info.thumbnail || null,
+        solicitadoPor,
+        fonte: 'spotify' as const,
+      }));
 
-      } catch (spotifyError: any) {
-        console.error('Erro Spotify, tentando fallback no YouTube:', spotifyError.message);
-        const resultados = await playdl.search(query.split('/').pop() || query, { source: { youtube: 'video' }, limit: 5 });
-        const v = resultados.find((r: any) => r.url && r.url.startsWith('https://www.youtube.com/watch'));
-        if (!v) throw new Error('Nao foi possivel encontrar a musica');
-        return [{
-          titulo: v.title || 'Sem titulo',
-          url: v.url,
-          duracao: formatarDuracao(v.durationInSec || 0),
-          thumbnail: v.thumbnails?.[0]?.url || null,
-          solicitadoPor,
-          fonte: 'youtube',
-        }];
-      }
+      return musicas;
     }
 
+    // YouTube URL
     if (fonte === 'youtube') {
-      const tipo = await playdl.validate(query);
+      const isPlaylist = query.includes('list=') || query.includes('/playlist');
+      const infos = await ytdlpGetInfo(query, isPlaylist);
 
-      if (tipo === 'yt_video') {
-        const info = await playdl.video_info(query);
-        const url = info.video_details.url;
-        if (!url || !url.startsWith('http')) throw new Error('URL invalida retornada pelo YouTube');
-        return [{
-          titulo: info.video_details.title || 'Sem titulo',
-          url,
-          duracao: formatarDuracao(info.video_details.durationInSec || 0),
-          thumbnail: info.video_details.thumbnails?.[0]?.url || null,
-          solicitadoPor,
-          fonte: 'youtube',
-        }];
-      }
+      if (!infos.length) throw new Error('Nenhum resultado YouTube encontrado');
 
-      if (tipo === 'yt_playlist') {
-        const playlist = await playdl.playlist_info(query, { incomplete: true });
-        const videos = await playlist.all_videos();
-        return videos
-          .filter((v: any) => v.url && v.url.startsWith('http'))
-          .slice(0, 50)
-          .map((v: any) => ({
-            titulo: v.title || 'Sem titulo',
-            url: v.url,
-            duracao: formatarDuracao(v.durationInSec || 0),
-            thumbnail: v.thumbnails?.[0]?.url || null,
-            solicitadoPor,
-            fonte: 'youtube' as const,
-          }));
-      }
+      return infos.slice(0, 50).map(info => ({
+        titulo: info.title || 'Sem titulo',
+        url: info.webpage_url || query,
+        duracao: formatarDuracao(info.duration || 0),
+        thumbnail: info.thumbnail || null,
+        solicitadoPor,
+        fonte: 'youtube' as const,
+      }));
     }
 
+    // SoundCloud
     if (fonte === 'soundcloud') {
-      const tipo = await playdl.validate(query);
-      if (tipo === 'so_track') {
-        const info = await playdl.soundcloud(query) as any;
-        return [{
-          titulo: info.name,
-          url: info.url,
-          duracao: formatarDuracao(Math.floor((info.durationInMs || 0) / 1000)),
-          thumbnail: info.thumbnail || null,
-          solicitadoPor,
-          fonte: 'soundcloud',
-        }];
-      }
+      const infos = await ytdlpGetInfo(query, false);
+      if (!infos.length) throw new Error('Nenhum resultado SoundCloud encontrado');
+      const info = infos[0];
+      return [{
+        titulo: info.title || 'Sem titulo',
+        url: info.webpage_url || query,
+        duracao: formatarDuracao(info.duration || 0),
+        thumbnail: info.thumbnail || null,
+        solicitadoPor,
+        fonte: 'soundcloud' as const,
+      }];
     }
 
-    // Busca por texto no YouTube
-    const resultados = await playdl.search(query, { source: { youtube: 'video' }, limit: 10 });
-    if (!resultados.length) throw new Error('Nenhum resultado encontrado.');
+    // Busca por texto
+    console.log('Buscando por texto no YouTube:', query);
+    const infos = await ytdlpGetInfo(query, false);
+    if (!infos.length) throw new Error('Nenhum resultado encontrado');
 
-    const v = resultados.find((r: any) => r.url && r.url.startsWith('https://www.youtube.com/watch'));
-    if (!v) throw new Error('Nenhum resultado com URL valida encontrado.');
-
+    const info = infos[0];
     return [{
-      titulo: v.title || 'Sem titulo',
-      url: v.url,
-      duracao: formatarDuracao(v.durationInSec || 0),
-      thumbnail: v.thumbnails?.[0]?.url || null,
+      titulo: info.title || 'Sem titulo',
+      url: info.webpage_url || `https://www.youtube.com/watch?v=${info.webpage_url}`,
+      duracao: formatarDuracao(info.duration || 0),
+      thumbnail: info.thumbnail || null,
       solicitadoPor,
-      fonte: 'youtube',
+      fonte: 'youtube' as const,
     }];
 
   } catch (error: any) {
@@ -294,10 +255,10 @@ export async function tocarProxima(guildId: string): Promise<void> {
       .setTitle('Tocando agora')
       .setDescription(`**[${musica.titulo}](${musica.url})**`)
       .addFields(
-        { name: 'Duracao', value: musica.duracao, inline: true },
+        { name: 'Duração', value: musica.duracao, inline: true },
         { name: 'Fonte', value: musica.fonte.charAt(0).toUpperCase() + musica.fonte.slice(1), inline: true },
         { name: 'Pedido por', value: musica.solicitadoPor, inline: true },
-        { name: 'Na fila', value: `${servidor.fila.length} musica(s)`, inline: true },
+        { name: 'Na fila', value: `${servidor.fila.length} música(s)`, inline: true },
       )
       .setFooter({ text: 'Loop: ' + (servidor.loop ? 'Ativo' : 'Inativo') });
 

@@ -17,6 +17,8 @@ import { iniciarSpawnAutomatico } from './lib/spawnAutomatico';
 
 import ffmpeg from '@ffmpeg-installer/ffmpeg';
 import { createRequire } from 'module';
+import { existsSync } from 'fs';
+import { execSync } from 'child_process';
 process.env.FFMPEG_PATH = ffmpeg.path;
 
 dotenv.config();
@@ -99,14 +101,16 @@ client.once('ready', async () => {
   console.log(`\n🦉 A Lua (${client.user?.tag}) está VIVA!\n`);
 
   // DEBUG — descobre onde o yt-dlp está instalado
-  const { execSync } = require('child_process');
-  try {
-    const path = execSync('echo $PATH').toString().trim();
-    console.log('PATH:', path);
-    const ytdlp = execSync('pip show yt-dlp 2>/dev/null && which yt-dlp 2>/dev/null || echo "nao instalado"').toString().trim();
-    console.log('yt-dlp info:', ytdlp);
-  } catch (e: any) {
-    console.log('Erro debug:', e.message);
+  const ytdlpPath = process.env.YTDLP_PATH || '/usr/local/bin/yt-dlp';
+  if (existsSync(ytdlpPath)) {
+    try {
+      const version = execSync(`${ytdlpPath} --version`).toString().trim();
+      console.log(`yt-dlp encontrado: ${version}`);
+    } catch {
+      console.warn('yt-dlp existe mas nao executou corretamente');
+    }
+  } else {
+    console.error(`yt-dlp NAO encontrado em: ${ytdlpPath}`);
   }
 
   // Registra os slash commands no servidor
