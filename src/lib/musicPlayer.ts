@@ -119,44 +119,68 @@ export async function buscarMusica(query: string, solicitadoPor: string): Promis
     if (fonte === 'spotify') {
       if (playdl.is_expired()) await playdl.refreshToken();
 
-      const spotifyInfo = await playdl.spotify(query);
+      try {
+        const spotifyInfo = await playdl.spotify(query);
 
-      if (spotifyInfo.type === 'track') {
-        const track = spotifyInfo as any;
-        const termoBusca = `${track.name} ${track.artists?.[0]?.name || ''}`;
-        const busca = await playdl.search(termoBusca, { source: { youtube: 'video' }, limit: 5 });
-        const resultado = busca.find((r: any) => r.url && r.url.startsWith('https://www.youtube.com/watch'));
-        if (!resultado) throw new Error('Musica nao encontrada no YouTube');
-        return [{
-          titulo: track.name,
-          url: resultado.url,
-          duracao: formatarDuracao(track.durationInSec || 0),
-          thumbnail: track.thumbnail?.url || null,
-          solicitadoPor,
-          fonte: 'spotify',
-        }];
-      }
-
-      if (spotifyInfo.type === 'playlist' || spotifyInfo.type === 'album') {
-        const lista = spotifyInfo as any;
-        const tracks = await lista.all_tracks();
-        const musicas: Musica[] = [];
-        for (const track of tracks.slice(0, 50)) {
+        if (spotifyInfo.type === 'track') {
+          const track = spotifyInfo as any;
           const termoBusca = `${track.name} ${track.artists?.[0]?.name || ''}`;
+          console.log('Buscando track Spotify:', termoBusca);
           const busca = await playdl.search(termoBusca, { source: { youtube: 'video' }, limit: 5 });
           const resultado = busca.find((r: any) => r.url && r.url.startsWith('https://www.youtube.com/watch'));
-          if (resultado) {
-            musicas.push({
-              titulo: track.name,
-              url: resultado.url,
-              duracao: formatarDuracao(track.durationInSec || 0),
-              thumbnail: track.thumbnail?.url || null,
-              solicitadoPor,
-              fonte: 'spotify',
-            });
-          }
+          if (!resultado) throw new Error('Musica nao encontrada no YouTube');
+          return [{
+            titulo: track.name,
+            url: resultado.url,
+            duracao: formatarDuracao(track.durationInSec || 0),
+            thumbnail: track.thumbnail?.url || null,
+            solicitadoPor,
+            fonte: 'spotify',
+          }];
         }
-        return musicas;
+
+        if (spotifyInfo.type === 'playlist' || spotifyInfo.type === 'album') {
+          const lista = spotifyInfo as any;
+          console.log('Buscando playlist/album Spotify...');
+          const tracks = await lista.all_tracks();
+          console.log('Total de tracks:', tracks.length);
+          const musicas: Musica[] = [];
+          for (const track of tracks.slice(0, 50)) {
+            try {
+              const termoBusca = `${track.name} ${track.artists?.[0]?.name || ''}`;
+              const busca = await playdl.search(termoBusca, { source: { youtube: 'video' }, limit: 5 });
+              const resultado = busca.find((r: any) => r.url && r.url.startsWith('https://www.youtube.com/watch'));
+              if (resultado) {
+                musicas.push({
+                  titulo: track.name,
+                  url: resultado.url,
+                  duracao: formatarDuracao(track.durationInSec || 0),
+                  thumbnail: track.thumbnail?.url || null,
+                  solicitadoPor,
+                  fonte: 'spotify',
+                });
+              }
+            } catch (e) {
+              console.warn('Erro ao buscar track:', track.name, e);
+            }
+          }
+          if (!musicas.length) throw new Error('Nenhuma musica da playlist encontrada no YouTube');
+          return musicas;
+        }
+
+      } catch (spotifyError: any) {
+        console.error('Erro Spotify, tentando fallback no YouTube:', spotifyError.message);
+        const resultados = await playdl.search(query.split('/').pop() || query, { source: { youtube: 'video' }, limit: 5 });
+        const v = resultados.find((r: any) => r.url && r.url.startsWith('https://www.youtube.com/watch'));
+        if (!v) throw new Error('Nao foi possivel encontrar a musica');
+        return [{
+          titulo: v.title || 'Sem titulo',
+          url: v.url,
+          duracao: formatarDuracao(v.durationInSec || 0),
+          thumbnail: v.thumbnails?.[0]?.url || null,
+          solicitadoPor,
+          fonte: 'youtube',
+        }];
       }
     }
 
@@ -209,6 +233,7 @@ export async function buscarMusica(query: string, solicitadoPor: string): Promis
       }
     }
 
+    // Busca por texto no YouTube
     const resultados = await playdl.search(query, { source: { youtube: 'video' }, limit: 10 });
     if (!resultados.length) throw new Error('Nenhum resultado encontrado.');
 
