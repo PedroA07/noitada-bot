@@ -13,6 +13,7 @@ import {
 import { VoiceChannel, TextChannel, EmbedBuilder } from 'discord.js';
 import * as playdl from 'play-dl';
 import { spawn } from 'child_process';
+import { Readable } from 'stream';
 
 export interface Musica {
   titulo: string;
@@ -49,7 +50,7 @@ export function detectarFonte(url: string): 'youtube' | 'spotify' | 'soundcloud'
   return null;
 }
 
-function streamViaYtDlp(url: string): NodeJS.ReadableStream {
+function streamViaYtDlp(url: string): Readable {
   const args = [
     '-f', 'bestaudio[ext=webm]/bestaudio/best',
     '--no-playlist',
@@ -72,11 +73,11 @@ function streamViaYtDlp(url: string): NodeJS.ReadableStream {
     console.error('yt-dlp:', data.toString().trim());
   });
 
-  ytdlp.on('error', (err) => {
+  ytdlp.on('error', (err: Error) => {
     console.error('Erro ao iniciar yt-dlp:', err.message);
   });
 
-  return ytdlp.stdout;
+  return ytdlp.stdout as unknown as Readable;
 }
 
 async function configurarTokens() {
@@ -102,6 +103,8 @@ async function configurarTokens() {
       youtube: { cookie: youtubeCookie },
     });
     console.log('YouTube cookie configurado!');
+  } else {
+    console.warn('YOUTUBE_COOKIE nao configurado.');
   }
 }
 
