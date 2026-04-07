@@ -98,6 +98,15 @@ const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_BOT_TOKEN!
 client.once('ready', async () => {
   console.log(`\n🦉 A Lua (${client.user?.tag}) está VIVA!\n`);
 
+  // DEBUG — descobre onde o yt-dlp está instalado
+  const { execSync } = require('child_process');
+  try {
+    const which = execSync('which yt-dlp 2>/dev/null || find / -name yt-dlp 2>/dev/null | head -5').toString();
+    console.log('yt-dlp encontrado em:', which);
+  } catch (e) {
+    console.log('yt-dlp nao encontrado via which');
+  }
+
   // Registra os slash commands no servidor
   try {
     await rest.put(
