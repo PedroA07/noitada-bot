@@ -15,6 +15,19 @@ import { iniciarFilaCargos } from './scripts/filaCargos';
 import { iniciarMonitorDeStatus } from './monitorStatus';
 import { iniciarSpawnAutomatico } from './lib/spawnAutomatico';
 
+import ffmpeg from '@ffmpeg-installer/ffmpeg';
+import { createRequire } from 'module';
+process.env.FFMPEG_PATH = ffmpeg.path;
+
+// Garante que o ffmpeg está disponível
+try {
+  const ffmpegInstaller = require('@ffmpeg-installer/ffmpeg');
+  process.env.FFMPEG_PATH = ffmpegInstaller.path;
+  console.log('ffmpeg configurado:', ffmpegInstaller.path);
+} catch (e) {
+  console.warn('ffmpeg-installer nao encontrado, usando ffmpeg do sistema');
+}
+
 dotenv.config();
 
 // ============================================================
