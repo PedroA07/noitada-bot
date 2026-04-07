@@ -11,7 +11,7 @@ import {
   StreamType,
 } from '@discordjs/voice';
 import { VoiceChannel, TextChannel, EmbedBuilder } from 'discord.js';
-import playdl from 'play-dl';
+import * as playdl from 'play-dl';
 
 export interface Musica {
   titulo: string;
@@ -32,10 +32,8 @@ export interface FilaServidor {
   canalTexto: TextChannel;
 }
 
-// Mapa global de filas por servidor
 export const filas = new Map<string, FilaServidor>();
 
-// Converte segundos em mm:ss
 export function formatarDuracao(segundos: number): string {
   if (!segundos || isNaN(segundos)) return '??:??';
   const m = Math.floor(segundos / 60);
@@ -43,7 +41,6 @@ export function formatarDuracao(segundos: number): string {
   return `${m}:${s.toString().padStart(2, '0')}`;
 }
 
-// Detecta a fonte da URL
 export function detectarFonte(url: string): 'youtube' | 'spotify' | 'soundcloud' | null {
   if (url.includes('youtube.com') || url.includes('youtu.be')) return 'youtube';
   if (url.includes('spotify.com')) return 'spotify';
@@ -51,26 +48,52 @@ export function detectarFonte(url: string): 'youtube' | 'spotify' | 'soundcloud'
   return null;
 }
 
-// Busca informações da música
+// Configura Spotify
+async function configurarSpotify() {
+  const clientId = process.env.SPOTIFY_CLIENT_ID;
+  const clientSecret = process.env.SPOTIFY_CLIENT_SECRET;
+  const refreshToken = process.env.SPOTIFY_REFRESH_TOKEN;
+
+  if (!clientId || !clientSecret || !refreshToken) {
+    console.warn('Credenciais do Spotify nao configuradas.');
+    return;
+  }
+
+  await playdl.setToken({
+    spotify: {
+      client_id: clientId,
+      client_secret: clientSecret,
+      refresh_token: refreshToken,
+      market: 'BR',
+    },
+  });
+
+  console.log('Spotify configurado com sucesso!');
+}
+
+configurarSpotify();
+
 export async function buscarMusica(query: string, solicitadoPor: string): Promise<Musica[]> {
   const fonte = detectarFonte(query);
 
   try {
-    // Spotify — converte para YouTube via play-dl
+    // Spotify
     if (fonte === 'spotify') {
       if (playdl.is_expired()) await playdl.refreshToken();
 
       const spotifyInfo = await playdl.spotify(query);
 
       if (spotifyInfo.type === 'track') {
-        const track = spotifyInfo as playdl.SpotifyTrack;
-        const busca = await playdl.search(`${track.name} ${track.artists[0]?.name || ''}`, { source: { youtube: 'video' }, limit: 1 });
-        if (!busca.length) throw new Error('Música não encontrada no YouTube');
-        const yt = busca[0];
+        const track = spotifyInfo as any;
+        const busca = await playdl.search(
+          `${track.name} ${track.artists?.[0]?.name || ''}`,
+          { source: { youtube: 'video' }, limit: 1 }
+        );
+        if (!busca.length) throw new Error('Musica nao encontrada');
         return [{
           titulo: track.name,
-          url: yt.url,
-          duracao: formatarDuracao(track.durationInSec),
+          url: busca[0].url,
+          duracao: formatarDuracao(track.durationInSec || 0),
           thumbnail: track.thumbnail?.url || null,
           solicitadoPor,
           fonte: 'spotify',
@@ -78,16 +101,19 @@ export async function buscarMusica(query: string, solicitadoPor: string): Promis
       }
 
       if (spotifyInfo.type === 'playlist' || spotifyInfo.type === 'album') {
-        const lista = spotifyInfo as playdl.SpotifyPlaylist | playdl.SpotifyAlbum;
+        const lista = spotifyInfo as any;
         const tracks = await lista.all_tracks();
         const musicas: Musica[] = [];
         for (const track of tracks.slice(0, 50)) {
-          const busca = await playdl.search(`${track.name} ${track.artists[0]?.name || ''}`, { source: { youtube: 'video' }, limit: 1 });
+          const busca = await playdl.search(
+            `${track.name} ${track.artists?.[0]?.name || ''}`,
+            { source: { youtube: 'video' }, limit: 1 }
+          );
           if (busca.length) {
             musicas.push({
               titulo: track.name,
               url: busca[0].url,
-              duracao: formatarDuracao(track.durationInSec),
+              duracao: formatarDuracao(track.durationInSec || 0),
               thumbnail: track.thumbnail?.url || null,
               solicitadoPor,
               fonte: 'spotify',
@@ -98,17 +124,17 @@ export async function buscarMusica(query: string, solicitadoPor: string): Promis
       }
     }
 
-    // YouTube — URL direta
+    // YouTube URL direta
     if (fonte === 'youtube') {
       const tipo = await playdl.validate(query);
 
       if (tipo === 'yt_video') {
         const info = await playdl.video_info(query);
         return [{
-          titulo: info.video_details.title || 'Sem título',
+          titulo: info.video_details.title || 'Sem titulo',
           url: info.video_details.url,
-          duracao: formatarDuracao(info.video_details.durationInSec),
-          thumbnail: info.video_details.thumbnails[0]?.url || null,
+          duracao: formatarDuracao(info.video_details.durationInSec || 0),
+          thumbnail: info.video_details.thumbnails?.[0]?.url || null,
           solicitadoPor,
           fonte: 'youtube',
         }];
@@ -117,26 +143,26 @@ export async function buscarMusica(query: string, solicitadoPor: string): Promis
       if (tipo === 'yt_playlist') {
         const playlist = await playdl.playlist_info(query, { incomplete: true });
         const videos = await playlist.all_videos();
-        return videos.slice(0, 50).map(v => ({
-          titulo: v.title || 'Sem título',
+        return videos.slice(0, 50).map((v: any) => ({
+          titulo: v.title || 'Sem titulo',
           url: v.url,
-          duracao: formatarDuracao(v.durationInSec),
-          thumbnail: v.thumbnails[0]?.url || null,
+          duracao: formatarDuracao(v.durationInSec || 0),
+          thumbnail: v.thumbnails?.[0]?.url || null,
           solicitadoPor,
-          fonte: 'youtube',
+          fonte: 'youtube' as const,
         }));
       }
     }
 
-    // SoundCloud — URL direta
+    // SoundCloud URL direta
     if (fonte === 'soundcloud') {
       const tipo = await playdl.validate(query);
-      if (tipo === 'sc_track') {
-        const info = await playdl.soundcloud(query) as playdl.SoundCloudTrack;
+      if (tipo === 'so_track') {
+        const info = await playdl.soundcloud(query) as any;
         return [{
           titulo: info.name,
           url: info.url,
-          duracao: formatarDuracao(Math.floor(info.durationInMs / 1000)),
+          duracao: formatarDuracao(Math.floor((info.durationInMs || 0) / 1000)),
           thumbnail: info.thumbnail || null,
           solicitadoPor,
           fonte: 'soundcloud',
@@ -149,27 +175,25 @@ export async function buscarMusica(query: string, solicitadoPor: string): Promis
     if (!resultados.length) throw new Error('Nenhum resultado encontrado.');
     const v = resultados[0];
     return [{
-      titulo: v.title || 'Sem título',
+      titulo: v.title || 'Sem titulo',
       url: v.url,
       duracao: formatarDuracao(v.durationInSec || 0),
-      thumbnail: v.thumbnails[0]?.url || null,
+      thumbnail: v.thumbnails?.[0]?.url || null,
       solicitadoPor,
       fonte: 'youtube',
     }];
 
   } catch (error: any) {
-    throw new Error(`Erro ao buscar música: ${error.message}`);
+    throw new Error(`Erro ao buscar musica: ${error.message}`);
   }
 }
 
-// Toca a próxima música da fila
 export async function tocarProxima(guildId: string): Promise<void> {
   const servidor = filas.get(guildId);
   if (!servidor) return;
 
   if (servidor.fila.length === 0) {
     servidor.tocandoAgora = null;
-    // Desconecta após 5 minutos sem músicas
     setTimeout(() => {
       const s = filas.get(guildId);
       if (s && !s.tocandoAgora) {
@@ -193,31 +217,29 @@ export async function tocarProxima(guildId: string): Promise<void> {
 
     servidor.player.play(resource);
 
-    // Envia embed no canal de texto
     const embed = new EmbedBuilder()
       .setColor('#8B5CF6')
-      .setTitle('🎵 Tocando agora')
+      .setTitle('Tocando agora')
       .setDescription(`**[${musica.titulo}](${musica.url})**`)
       .addFields(
-        { name: '⏱️ Duração', value: musica.duracao, inline: true },
-        { name: '📻 Fonte', value: musica.fonte.charAt(0).toUpperCase() + musica.fonte.slice(1), inline: true },
-        { name: '👤 Pedido por', value: musica.solicitadoPor, inline: true },
-        { name: '📋 Na fila', value: `${servidor.fila.length} música(s)`, inline: true },
+        { name: 'Duracao', value: musica.duracao, inline: true },
+        { name: 'Fonte', value: musica.fonte.charAt(0).toUpperCase() + musica.fonte.slice(1), inline: true },
+        { name: 'Pedido por', value: musica.solicitadoPor, inline: true },
+        { name: 'Na fila', value: `${servidor.fila.length} musica(s)`, inline: true },
       )
-      .setFooter({ text: '🔁 Loop: ' + (servidor.loop ? 'Ativo' : 'Inativo') });
+      .setFooter({ text: 'Loop: ' + (servidor.loop ? 'Ativo' : 'Inativo') });
 
     if (musica.thumbnail) embed.setThumbnail(musica.thumbnail);
 
     await servidor.canalTexto.send({ embeds: [embed] });
 
   } catch (error) {
-    console.error('❌ Erro ao tocar música:', error);
-    await servidor.canalTexto.send(`❌ Erro ao tocar **${musica.titulo}**. Pulando...`);
+    console.error('Erro ao tocar musica:', error);
+    await servidor.canalTexto.send(`Erro ao tocar **${musica.titulo}**. Pulando...`);
     await tocarProxima(guildId);
   }
 }
 
-// Conecta ao canal de voz e inicializa a fila
 export async function conectar(canal: VoiceChannel, canalTexto: TextChannel, guildId: string): Promise<FilaServidor> {
   const connection = joinVoiceChannel({
     channelId: canal.id,
@@ -243,19 +265,15 @@ export async function conectar(canal: VoiceChannel, canalTexto: TextChannel, gui
 
   filas.set(guildId, servidor);
 
-  // Quando a música termina, toca a próxima
   player.on(AudioPlayerStatus.Idle, async () => {
     const s = filas.get(guildId);
     if (!s) return;
-
     if (s.loop && s.tocandoAgora) {
       s.fila.unshift(s.tocandoAgora);
     }
-
     await tocarProxima(guildId);
   });
 
-  // Reconecta se desconectado
   connection.on(VoiceConnectionStatus.Disconnected, async () => {
     try {
       await Promise.race([
