@@ -49,7 +49,6 @@ export function detectarFonte(url: string): 'youtube' | 'spotify' | 'soundcloud'
 }
 
 async function configurarTokens() {
-  // Spotify
   const clientId = process.env.SPOTIFY_CLIENT_ID;
   const clientSecret = process.env.SPOTIFY_CLIENT_SECRET;
   const refreshToken = process.env.SPOTIFY_REFRESH_TOKEN;
@@ -66,13 +65,10 @@ async function configurarTokens() {
     console.log('Spotify configurado!');
   }
 
-  // YouTube cookie
   const youtubeCookie = process.env.YOUTUBE_COOKIE;
   if (youtubeCookie) {
     await playdl.setToken({
-      youtube: {
-        cookie: youtubeCookie,
-      },
+      youtube: { cookie: youtubeCookie },
     });
     console.log('YouTube cookie configurado!');
   } else {
@@ -86,7 +82,6 @@ export async function buscarMusica(query: string, solicitadoPor: string): Promis
   const fonte = detectarFonte(query);
 
   try {
-    // Spotify
     if (fonte === 'spotify') {
       if (playdl.is_expired()) await playdl.refreshToken();
 
@@ -133,7 +128,6 @@ export async function buscarMusica(query: string, solicitadoPor: string): Promis
       }
     }
 
-    // YouTube URL direta
     if (fonte === 'youtube') {
       const tipo = await playdl.validate(query);
 
@@ -163,7 +157,6 @@ export async function buscarMusica(query: string, solicitadoPor: string): Promis
       }
     }
 
-    // SoundCloud URL direta
     if (fonte === 'soundcloud') {
       const tipo = await playdl.validate(query);
       if (tipo === 'so_track') {
@@ -183,7 +176,6 @@ export async function buscarMusica(query: string, solicitadoPor: string): Promis
     const resultados = await playdl.search(query, { source: { youtube: 'video' }, limit: 5 });
     if (!resultados.length) throw new Error('Nenhum resultado encontrado.');
 
-    // Pega o primeiro resultado com URL válida
     const v = resultados.find((r: any) => r.url && r.url.startsWith('http'));
     if (!v) throw new Error('Nenhum resultado com URL valida encontrado.');
 
@@ -202,14 +194,6 @@ export async function buscarMusica(query: string, solicitadoPor: string): Promis
 }
 
 export async function tocarProxima(guildId: string): Promise<void> {
-  // Valida URL antes de tocar
-  if (!musica.url || !musica.url.startsWith('http')) {
-    console.error('URL invalida:', musica.url);
-    await servidor.canalTexto.send(`URL invalida para **${musica.titulo}**. Pulando...`);
-    await tocarProxima(guildId);
-    return;
-  }
-
   const servidor = filas.get(guildId);
   if (!servidor) return;
 
@@ -227,6 +211,14 @@ export async function tocarProxima(guildId: string): Promise<void> {
 
   const musica = servidor.fila.shift()!;
   servidor.tocandoAgora = musica;
+
+  // Valida URL depois de declarar musica
+  if (!musica.url || !musica.url.startsWith('http')) {
+    console.error('URL invalida:', musica.url);
+    await servidor.canalTexto.send(`URL invalida para **${musica.titulo}**. Pulando...`);
+    await tocarProxima(guildId);
+    return;
+  }
 
   try {
     const stream = await playdl.stream(musica.url, { quality: 2 });
