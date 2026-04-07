@@ -66,8 +66,9 @@ function streamViaYtDlp(url: string): Readable {
 
   args.push(url);
 
-  console.log('Iniciando yt-dlp para:', url);
-  const ytdlp = spawn('yt-dlp', args);
+  const ytdlpPath = process.env.YTDLP_PATH || 'yt-dlp';
+  console.log('Iniciando yt-dlp:', ytdlpPath, 'para:', url);
+  const ytdlp = spawn(ytdlpPath, args);
 
   ytdlp.stderr.on('data', (data: Buffer) => {
     console.error('yt-dlp:', data.toString().trim());

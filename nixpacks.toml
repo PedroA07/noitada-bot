@@ -2,4 +2,4 @@
 nixPkgs = ["ffmpeg", "python3", "gcc", "gnumake", "yt-dlp"]
 
 [phases.install]
-cmds = ["npm install"]
+cmds = ["npm install", "npm install @discordjs/opus --build-from-source || npm install opusscript"]
