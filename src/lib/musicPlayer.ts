@@ -89,14 +89,15 @@ export async function buscarMusica(query: string, solicitadoPor: string): Promis
 
       if (spotifyInfo.type === 'track') {
         const track = spotifyInfo as any;
-        const busca = await playdl.search(
-          `${track.name} ${track.artists?.[0]?.name || ''}`,
-          { source: { youtube: 'video' }, limit: 1 }
-        );
-        if (!busca.length) throw new Error('Musica nao encontrada');
+        const termoBusca = `${track.name} ${track.artists?.[0]?.name || ''}`;
+        console.log('Buscando no YouTube:', termoBusca);
+        const busca = await playdl.search(termoBusca, { source: { youtube: 'video' }, limit: 5 });
+        const resultado = busca.find((r: any) => r.url && r.url.startsWith('http'));
+        if (!resultado) throw new Error('Musica nao encontrada no YouTube');
+        console.log('URL encontrada:', resultado.url);
         return [{
           titulo: track.name,
-          url: busca[0].url,
+          url: resultado.url,
           duracao: formatarDuracao(track.durationInSec || 0),
           thumbnail: track.thumbnail?.url || null,
           solicitadoPor,
@@ -109,14 +110,13 @@ export async function buscarMusica(query: string, solicitadoPor: string): Promis
         const tracks = await lista.all_tracks();
         const musicas: Musica[] = [];
         for (const track of tracks.slice(0, 50)) {
-          const busca = await playdl.search(
-            `${track.name} ${track.artists?.[0]?.name || ''}`,
-            { source: { youtube: 'video' }, limit: 1 }
-          );
-          if (busca.length) {
+          const termoBusca = `${track.name} ${track.artists?.[0]?.name || ''}`;
+          const busca = await playdl.search(termoBusca, { source: { youtube: 'video' }, limit: 5 });
+          const resultado = busca.find((r: any) => r.url && r.url.startsWith('http'));
+          if (resultado) {
             musicas.push({
               titulo: track.name,
-              url: busca[0].url,
+              url: resultado.url,
               duracao: formatarDuracao(track.durationInSec || 0),
               thumbnail: track.thumbnail?.url || null,
               solicitadoPor,
@@ -130,12 +130,16 @@ export async function buscarMusica(query: string, solicitadoPor: string): Promis
 
     if (fonte === 'youtube') {
       const tipo = await playdl.validate(query);
+      console.log('Tipo YouTube:', tipo, 'URL:', query);
 
       if (tipo === 'yt_video') {
         const info = await playdl.video_info(query);
+        const url = info.video_details.url;
+        console.log('URL YouTube video:', url);
+        if (!url || !url.startsWith('http')) throw new Error('URL invalida retornada pelo YouTube');
         return [{
           titulo: info.video_details.title || 'Sem titulo',
-          url: info.video_details.url,
+          url,
           duracao: formatarDuracao(info.video_details.durationInSec || 0),
           thumbnail: info.video_details.thumbnails?.[0]?.url || null,
           solicitadoPor,
@@ -146,14 +150,17 @@ export async function buscarMusica(query: string, solicitadoPor: string): Promis
       if (tipo === 'yt_playlist') {
         const playlist = await playdl.playlist_info(query, { incomplete: true });
         const videos = await playlist.all_videos();
-        return videos.slice(0, 50).map((v: any) => ({
-          titulo: v.title || 'Sem titulo',
-          url: v.url,
-          duracao: formatarDuracao(v.durationInSec || 0),
-          thumbnail: v.thumbnails?.[0]?.url || null,
-          solicitadoPor,
-          fonte: 'youtube' as const,
-        }));
+        return videos
+          .filter((v: any) => v.url && v.url.startsWith('http'))
+          .slice(0, 50)
+          .map((v: any) => ({
+            titulo: v.title || 'Sem titulo',
+            url: v.url,
+            duracao: formatarDuracao(v.durationInSec || 0),
+            thumbnail: v.thumbnails?.[0]?.url || null,
+            solicitadoPor,
+            fonte: 'youtube' as const,
+          }));
       }
     }
 
@@ -172,12 +179,20 @@ export async function buscarMusica(query: string, solicitadoPor: string): Promis
       }
     }
 
-    // Busca por texto no YouTube
-    const resultados = await playdl.search(query, { source: { youtube: 'video' }, limit: 5 });
+    // Busca por texto — usa a URL completa do YouTube
+    console.log('Buscando por texto:', query);
+    const resultados = await playdl.search(query, { source: { youtube: 'video' }, limit: 10 });
+    console.log('Resultados encontrados:', resultados.length);
+
     if (!resultados.length) throw new Error('Nenhum resultado encontrado.');
 
-    const v = resultados.find((r: any) => r.url && r.url.startsWith('http'));
-    if (!v) throw new Error('Nenhum resultado com URL valida encontrado.');
+    // Log das URLs encontradas
+    resultados.forEach((r: any, i: number) => console.log(`  [${i}] url: ${r.url} title: ${r.title}`));
+
+    const v = resultados.find((r: any) => r.url && r.url.startsWith('https://www.youtube.com/watch'));
+    if (!v) throw new Error('Nenhum resultado com URL valida do YouTube encontrado.');
+
+    console.log('Usando URL:', v.url);
 
     return [{
       titulo: v.title || 'Sem titulo',
