@@ -48,30 +48,39 @@ export function detectarFonte(url: string): 'youtube' | 'spotify' | 'soundcloud'
   return null;
 }
 
-// Configura Spotify
-async function configurarSpotify() {
+async function configurarTokens() {
+  // Spotify
   const clientId = process.env.SPOTIFY_CLIENT_ID;
   const clientSecret = process.env.SPOTIFY_CLIENT_SECRET;
   const refreshToken = process.env.SPOTIFY_REFRESH_TOKEN;
 
-  if (!clientId || !clientSecret || !refreshToken) {
-    console.warn('Credenciais do Spotify nao configuradas.');
-    return;
+  if (clientId && clientSecret && refreshToken) {
+    await playdl.setToken({
+      spotify: {
+        client_id: clientId,
+        client_secret: clientSecret,
+        refresh_token: refreshToken,
+        market: 'BR',
+      },
+    });
+    console.log('Spotify configurado!');
   }
 
-  await playdl.setToken({
-    spotify: {
-      client_id: clientId,
-      client_secret: clientSecret,
-      refresh_token: refreshToken,
-      market: 'BR',
-    },
-  });
-
-  console.log('Spotify configurado com sucesso!');
+  // YouTube cookie
+  const youtubeCookie = process.env.YOUTUBE_COOKIE;
+  if (youtubeCookie) {
+    await playdl.setToken({
+      youtube: {
+        cookie: youtubeCookie,
+      },
+    });
+    console.log('YouTube cookie configurado!');
+  } else {
+    console.warn('YOUTUBE_COOKIE nao configurado.');
+  }
 }
 
-configurarSpotify();
+configurarTokens();
 
 export async function buscarMusica(query: string, solicitadoPor: string): Promise<Musica[]> {
   const fonte = detectarFonte(query);
