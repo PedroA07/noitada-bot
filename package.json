@@ -16,7 +16,8 @@
     "dotenv": "^16.4.5",
     "ffmpeg-static": "^5.2.0",
     "opusscript": "^0.1.1",
-    "play-dl": "^1.9.7"
+    "play-dl": "^1.9.7",
+    "youtube-dl-exec": "^3.0.12"
   },
   "devDependencies": {
     "@types/node": "^20.11.5",

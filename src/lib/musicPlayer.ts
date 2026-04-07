@@ -1,3 +1,4 @@
+import youtubeDl from 'youtube-dl-exec';
 import {
   AudioPlayer,
   AudioPlayerStatus,
@@ -12,7 +13,6 @@ import {
 } from '@discordjs/voice';
 import { VoiceChannel, TextChannel, EmbedBuilder } from 'discord.js';
 import * as playdl from 'play-dl';
-import { spawn } from 'child_process';
 import { Readable } from 'stream';
 
 export interface Musica {
@@ -51,34 +51,40 @@ export function detectarFonte(url: string): 'youtube' | 'spotify' | 'soundcloud'
 }
 
 function streamViaYtDlp(url: string): Readable {
-  const args = [
-    '-f', 'bestaudio[ext=webm]/bestaudio/best',
-    '--no-playlist',
-    '-o', '-',
-    '--quiet',
-    '--no-warnings',
-  ];
+  console.log('Iniciando stream para:', url);
 
   const cookie = process.env.YOUTUBE_COOKIE;
+
+  const args: string[] = [
+    '--format', 'bestaudio[ext=webm]/bestaudio/best',
+    '--no-playlist',
+    '--quiet',
+    '--no-warnings',
+    '--output', '-',
+  ];
+
   if (cookie) {
     args.push('--add-header', `Cookie:${cookie}`);
   }
 
-  args.push(url);
-
-  const ytdlpPath = process.env.YTDLP_PATH || 'yt-dlp';
-  console.log('Iniciando yt-dlp:', ytdlpPath, 'para:', url);
-  const ytdlp = spawn(ytdlpPath, args);
-
-  ytdlp.stderr.on('data', (data: Buffer) => {
-    console.error('yt-dlp:', data.toString().trim());
+  const subprocess = youtubeDl.exec(url, {
+    format: 'bestaudio[ext=webm]/bestaudio/best',
+    noPlaylist: true,
+    quiet: true,
+    noWarnings: true,
+    output: '-',
+    addHeader: cookie ? [`Cookie:${cookie}`] : [],
   });
 
-  ytdlp.on('error', (err: Error) => {
-    console.error('Erro ao iniciar yt-dlp:', err.message);
+  subprocess.stderr?.on('data', (data: Buffer) => {
+    console.error('ytdl:', data.toString().trim());
   });
 
-  return ytdlp.stdout as unknown as Readable;
+  subprocess.on('error', (err: Error) => {
+    console.error('Erro ytdl:', err.message);
+  });
+
+  return subprocess.stdout as unknown as Readable;
 }
 
 async function configurarTokens() {
