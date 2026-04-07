@@ -1,15 +1,12 @@
-// Cache simples em memória para não gastar requisições repetidas
 const cacheRaridade = new Map<string, { raridade: string; expira: number }>();
-const CACHE_TTL = 24 * 60 * 60 * 1000; // 24 horas
+const CACHE_TTL = 24 * 60 * 60 * 1000;
 
-// Baseado na quantidade de resultados do Google
-// Quanto MAIS resultados = mais popular = mais RARO (difícil de conseguir)
 function calcularRaridade(totalResultados: number): string {
-  if (totalResultados >= 500_000_000) return 'lendario';  // 500M+
-  if (totalResultados >= 100_000_000) return 'epico';     // 100M-500M
-  if (totalResultados >= 10_000_000)  return 'raro';      // 10M-100M
-  if (totalResultados >= 1_000_000)   return 'incomum';   // 1M-10M
-  return 'comum';                                          // abaixo de 1M
+  if (totalResultados >= 500_000_000) return 'lendario';
+  if (totalResultados >= 100_000_000) return 'epico';
+  if (totalResultados >= 10_000_000)  return 'raro';
+  if (totalResultados >= 1_000_000)   return 'incomum';
+  return 'comum';
 }
 
 export async function buscarRaridadePorPopularidade(
@@ -18,7 +15,6 @@ export async function buscarRaridadePorPopularidade(
 ): Promise<string> {
   const chaveCache = `${personagem}:${vinculo}`.toLowerCase();
 
-  // Verifica cache
   const cached = cacheRaridade.get(chaveCache);
   if (cached && cached.expira > Date.now()) {
     return cached.raridade;
@@ -39,13 +35,16 @@ export async function buscarRaridadePorPopularidade(
     const res = await fetch(url);
     if (!res.ok) throw new Error(`Google API retornou ${res.status}`);
 
-    const data = await res.json();
+    // Tipagem correta para evitar erro TS2339
+    const data = await res.json() as {
+      searchInformation?: { totalResults?: string };
+    };
+
     const totalStr = data?.searchInformation?.totalResults || '0';
     const total = parseInt(totalStr, 10);
 
     const raridade = calcularRaridade(total);
 
-    // Salva no cache
     cacheRaridade.set(chaveCache, {
       raridade,
       expira: Date.now() + CACHE_TTL,
@@ -56,6 +55,6 @@ export async function buscarRaridadePorPopularidade(
 
   } catch (error) {
     console.error('❌ Erro ao buscar raridade no Google:', error);
-    return 'comum'; // fallback seguro
+    return 'comum';
   }
 }
