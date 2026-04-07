@@ -12,6 +12,7 @@ import {
 } from '@discordjs/voice';
 import { VoiceChannel, TextChannel, EmbedBuilder } from 'discord.js';
 import * as playdl from 'play-dl';
+import { spawn } from 'child_process';
 
 export interface Musica {
   titulo: string;
@@ -48,6 +49,36 @@ export function detectarFonte(url: string): 'youtube' | 'spotify' | 'soundcloud'
   return null;
 }
 
+function streamViaYtDlp(url: string): NodeJS.ReadableStream {
+  const args = [
+    '-f', 'bestaudio[ext=webm]/bestaudio/best',
+    '--no-playlist',
+    '-o', '-',
+    '--quiet',
+    '--no-warnings',
+  ];
+
+  const cookie = process.env.YOUTUBE_COOKIE;
+  if (cookie) {
+    args.push('--add-header', `Cookie:${cookie}`);
+  }
+
+  args.push(url);
+
+  console.log('Iniciando yt-dlp para:', url);
+  const ytdlp = spawn('yt-dlp', args);
+
+  ytdlp.stderr.on('data', (data: Buffer) => {
+    console.error('yt-dlp:', data.toString().trim());
+  });
+
+  ytdlp.on('error', (err) => {
+    console.error('Erro ao iniciar yt-dlp:', err.message);
+  });
+
+  return ytdlp.stdout;
+}
+
 async function configurarTokens() {
   const clientId = process.env.SPOTIFY_CLIENT_ID;
   const clientSecret = process.env.SPOTIFY_CLIENT_SECRET;
@@ -71,8 +102,6 @@ async function configurarTokens() {
       youtube: { cookie: youtubeCookie },
     });
     console.log('YouTube cookie configurado!');
-  } else {
-    console.warn('YOUTUBE_COOKIE nao configurado.');
   }
 }
 
@@ -90,11 +119,9 @@ export async function buscarMusica(query: string, solicitadoPor: string): Promis
       if (spotifyInfo.type === 'track') {
         const track = spotifyInfo as any;
         const termoBusca = `${track.name} ${track.artists?.[0]?.name || ''}`;
-        console.log('Buscando no YouTube:', termoBusca);
         const busca = await playdl.search(termoBusca, { source: { youtube: 'video' }, limit: 5 });
-        const resultado = busca.find((r: any) => r.url && r.url.startsWith('http'));
+        const resultado = busca.find((r: any) => r.url && r.url.startsWith('https://www.youtube.com/watch'));
         if (!resultado) throw new Error('Musica nao encontrada no YouTube');
-        console.log('URL encontrada:', resultado.url);
         return [{
           titulo: track.name,
           url: resultado.url,
@@ -112,7 +139,7 @@ export async function buscarMusica(query: string, solicitadoPor: string): Promis
         for (const track of tracks.slice(0, 50)) {
           const termoBusca = `${track.name} ${track.artists?.[0]?.name || ''}`;
           const busca = await playdl.search(termoBusca, { source: { youtube: 'video' }, limit: 5 });
-          const resultado = busca.find((r: any) => r.url && r.url.startsWith('http'));
+          const resultado = busca.find((r: any) => r.url && r.url.startsWith('https://www.youtube.com/watch'));
           if (resultado) {
             musicas.push({
               titulo: track.name,
@@ -130,12 +157,10 @@ export async function buscarMusica(query: string, solicitadoPor: string): Promis
 
     if (fonte === 'youtube') {
       const tipo = await playdl.validate(query);
-      console.log('Tipo YouTube:', tipo, 'URL:', query);
 
       if (tipo === 'yt_video') {
         const info = await playdl.video_info(query);
         const url = info.video_details.url;
-        console.log('URL YouTube video:', url);
         if (!url || !url.startsWith('http')) throw new Error('URL invalida retornada pelo YouTube');
         return [{
           titulo: info.video_details.title || 'Sem titulo',
@@ -179,20 +204,12 @@ export async function buscarMusica(query: string, solicitadoPor: string): Promis
       }
     }
 
-    // Busca por texto — usa a URL completa do YouTube
-    console.log('Buscando por texto:', query);
+    // Busca por texto no YouTube
     const resultados = await playdl.search(query, { source: { youtube: 'video' }, limit: 10 });
-    console.log('Resultados encontrados:', resultados.length);
-
     if (!resultados.length) throw new Error('Nenhum resultado encontrado.');
 
-    // Log das URLs encontradas
-    resultados.forEach((r: any, i: number) => console.log(`  [${i}] url: ${r.url} title: ${r.title}`));
-
     const v = resultados.find((r: any) => r.url && r.url.startsWith('https://www.youtube.com/watch'));
-    if (!v) throw new Error('Nenhum resultado com URL valida do YouTube encontrado.');
-
-    console.log('Usando URL:', v.url);
+    if (!v) throw new Error('Nenhum resultado com URL valida encontrado.');
 
     return [{
       titulo: v.title || 'Sem titulo',
@@ -227,7 +244,6 @@ export async function tocarProxima(guildId: string): Promise<void> {
   const musica = servidor.fila.shift()!;
   servidor.tocandoAgora = musica;
 
-  // Valida URL depois de declarar musica
   if (!musica.url || !musica.url.startsWith('http')) {
     console.error('URL invalida:', musica.url);
     await servidor.canalTexto.send(`URL invalida para **${musica.titulo}**. Pulando...`);
@@ -236,13 +252,12 @@ export async function tocarProxima(guildId: string): Promise<void> {
   }
 
   try {
-    const stream = await playdl.stream(musica.url, { quality: 2 });
-    const resource: AudioResource = createAudioResource(stream.stream, {
-      inputType: stream.type as StreamType,
+    const stream = streamViaYtDlp(musica.url);
+    const resource: AudioResource = createAudioResource(stream, {
+      inputType: StreamType.Arbitrary,
       inlineVolume: true,
     });
     resource.volume?.setVolume(servidor.volume / 100);
-
     servidor.player.play(resource);
 
     const embed = new EmbedBuilder()
@@ -258,7 +273,6 @@ export async function tocarProxima(guildId: string): Promise<void> {
       .setFooter({ text: 'Loop: ' + (servidor.loop ? 'Ativo' : 'Inativo') });
 
     if (musica.thumbnail) embed.setThumbnail(musica.thumbnail);
-
     await servidor.canalTexto.send({ embeds: [embed] });
 
   } catch (error) {

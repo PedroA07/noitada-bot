@@ -1,11 +1,5 @@
 [phases.setup]
-nixPkgs = ["ffmpeg", "python3", "gcc", "gnumake"]
+nixPkgs = ["ffmpeg", "python3", "gcc", "gnumake", "yt-dlp"]
 
 [phases.install]
 cmds = ["npm install"]
-
-[phases.build]
-cmds = ["npm run build"]
-
-[start]
-cmd = "node dist/bot.js"
