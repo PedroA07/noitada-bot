@@ -1,5 +1,14 @@
 [phases.setup]
-nixPkgs = ["ffmpeg", "python3", "gcc", "gnumake", "yt-dlp"]
+nixPkgs = ["ffmpeg", "python3", "pip"]
 
 [phases.install]
-cmds = ["npm install", "npm install @discordjs/opus --build-from-source || npm install opusscript"]
+cmds = [
+  "pip install yt-dlp",
+  "npm install"
+]
+
+[phases.build]
+cmds = ["npm run build"]
+
+[start]
+cmd = "node dist/bot.js"

@@ -101,10 +101,12 @@ client.once('ready', async () => {
   // DEBUG — descobre onde o yt-dlp está instalado
   const { execSync } = require('child_process');
   try {
-    const which = execSync('which yt-dlp 2>/dev/null || find / -name yt-dlp 2>/dev/null | head -5').toString();
-    console.log('yt-dlp encontrado em:', which);
-  } catch (e) {
-    console.log('yt-dlp nao encontrado via which');
+    const path = execSync('echo $PATH').toString().trim();
+    console.log('PATH:', path);
+    const ytdlp = execSync('pip show yt-dlp 2>/dev/null && which yt-dlp 2>/dev/null || echo "nao instalado"').toString().trim();
+    console.log('yt-dlp info:', ytdlp);
+  } catch (e: any) {
+    console.log('Erro debug:', e.message);
   }
 
   // Registra os slash commands no servidor
