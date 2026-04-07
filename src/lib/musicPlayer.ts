@@ -180,9 +180,13 @@ export async function buscarMusica(query: string, solicitadoPor: string): Promis
     }
 
     // Busca por texto no YouTube
-    const resultados = await playdl.search(query, { source: { youtube: 'video' }, limit: 1 });
+    const resultados = await playdl.search(query, { source: { youtube: 'video' }, limit: 5 });
     if (!resultados.length) throw new Error('Nenhum resultado encontrado.');
-    const v = resultados[0];
+
+    // Pega o primeiro resultado com URL válida
+    const v = resultados.find((r: any) => r.url && r.url.startsWith('http'));
+    if (!v) throw new Error('Nenhum resultado com URL valida encontrado.');
+
     return [{
       titulo: v.title || 'Sem titulo',
       url: v.url,
@@ -198,6 +202,14 @@ export async function buscarMusica(query: string, solicitadoPor: string): Promis
 }
 
 export async function tocarProxima(guildId: string): Promise<void> {
+  // Valida URL antes de tocar
+  if (!musica.url || !musica.url.startsWith('http')) {
+    console.error('URL invalida:', musica.url);
+    await servidor.canalTexto.send(`URL invalida para **${musica.titulo}**. Pulando...`);
+    await tocarProxima(guildId);
+    return;
+  }
+
   const servidor = filas.get(guildId);
   if (!servidor) return;
 
