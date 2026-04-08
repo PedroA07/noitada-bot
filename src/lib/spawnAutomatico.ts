@@ -1,21 +1,36 @@
-import { Client, EmbedBuilder, ActionRowBuilder, ButtonBuilder, ButtonStyle, ComponentType, TextChannel } from 'discord.js';
+import {
+  Client,
+  EmbedBuilder,
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
+  ComponentType,
+  TextChannel,
+} from 'discord.js';
 import { supabase } from './supabase';
 import { buscarRaridadePorPopularidade } from './raridade';
 
 const COR_RARIDADE: Record<string, string> = {
-  comum: '#9CA3AF', incomum: '#10B981', raro: '#3B82F6',
-  epico: '#8B5CF6', lendario: '#F59E0B',
+  comum: '#9CA3AF',
+  incomum: '#10B981',
+  raro: '#3B82F6',
+  epico: '#8B5CF6',
+  lendario: '#F59E0B',
 };
 
 const EMOJI_RARIDADE: Record<string, string> = {
   comum: '⚪', incomum: '🟢', raro: '🔵', epico: '🟣', lendario: '🟡',
 };
 
+const EMOJI_GENERO: Record<string, string> = {
+  masculino: '♂️', feminino: '♀️', outros: '⚧️',
+};
+
 const PESO_RARIDADE: Record<string, number> = {
   comum: 50, incomum: 25, raro: 15, epico: 7, lendario: 3,
 };
 
-// Busca configuração do sistema
+// ─── Busca configuração do sistema de cartas ─────────────────────────────────
 async function buscarConfig(guildId: string) {
   const { data } = await supabase
     .from('configuracoes_cartas_sistema')
@@ -26,7 +41,7 @@ async function buscarConfig(guildId: string) {
   return data;
 }
 
-// Busca config de cargo mais generosa para o usuário
+// ─── Busca config de captura mais generosa para os cargos do usuário ─────────
 async function buscarConfigCaptura(guildId: string, cargoIds: string[]) {
   const { data: configs } = await supabase
     .from('configuracoes_roll')
@@ -43,7 +58,7 @@ async function buscarConfigCaptura(guildId: string, cargoIds: string[]) {
   );
 }
 
-// Verifica se usuário pode capturar
+// ─── Verifica se o usuário pode capturar ────────────────────────────────────
 async function podeCapturar(
   discordId: string,
   guildId: string,
@@ -51,26 +66,27 @@ async function podeCapturar(
 ): Promise<{ pode: boolean; motivo?: string }> {
   const config = await buscarConfigCaptura(guildId, cargoIds);
   const agora = new Date();
+  const hoje = agora.toDateString();
 
-  // Busca ou cria registro de capturas diárias
   const { data: capturaDiaria } = await supabase
     .from('capturas_diarias')
     .select('*')
     .eq('discord_id', discordId)
     .eq('guild_id', guildId)
-    .gte('data_reset', new Date().toDateString())
+    .gte('data_reset', hoje)
     .maybeSingle();
 
   if (capturaDiaria) {
-    // Verifica limite diário
-    if (capturaDiaria.total_capturas >= config.capturas_por_dia) {
+    const rollsExtras = capturaDiaria.rolls_extras || 0;
+    const limiteEfetivo = config.capturas_por_dia + rollsExtras;
+
+    if (capturaDiaria.total_capturas >= limiteEfetivo) {
       return {
         pode: false,
-        motivo: `❌ Você atingiu o limite de **${config.capturas_por_dia} capturas** hoje! Volta amanhã. 🌙`,
+        motivo: `❌ Você atingiu o limite de **${config.capturas_por_dia} capturas** hoje!\n💡 Use \`/roll\` para ganhar capturas extras. Volta amanhã. 🌙`,
       };
     }
 
-    // Verifica cooldown entre capturas
     if (capturaDiaria.ultima_captura && config.cooldown_captura_segundos > 0) {
       const ultimaCaptura = new Date(capturaDiaria.ultima_captura);
       const diff = (agora.getTime() - ultimaCaptura.getTime()) / 1000;
@@ -87,7 +103,7 @@ async function podeCapturar(
   return { pode: true };
 }
 
-// Registra uma captura
+// ─── Registra uma captura ────────────────────────────────────────────────────
 async function registrarCaptura(discordId: string, guildId: string) {
   const hoje = new Date().toDateString();
   const agora = new Date().toISOString();
@@ -103,10 +119,7 @@ async function registrarCaptura(discordId: string, guildId: string) {
   if (existente) {
     await supabase
       .from('capturas_diarias')
-      .update({
-        total_capturas: existente.total_capturas + 1,
-        ultima_captura: agora,
-      })
+      .update({ total_capturas: existente.total_capturas + 1, ultima_captura: agora })
       .eq('id', existente.id);
   } else {
     await supabase
@@ -116,21 +129,22 @@ async function registrarCaptura(discordId: string, guildId: string) {
         guild_id: guildId,
         data_reset: agora,
         total_capturas: 1,
+        rolls_extras: 0,
         ultima_captura: agora,
       });
   }
 }
 
-// Sorteia uma carta com peso por raridade
+// ─── Sorteia uma carta com peso por raridade ─────────────────────────────────
 async function sortearCarta() {
   const { data: cartas } = await supabase
     .from('cartas')
-    .select('id, nome, personagem, vinculo, categoria, raridade, imagem_url, descricao')
+    .select('id, nome, personagem, vinculo, categoria, raridade, imagem_url, descricao, genero')
     .eq('ativa', true);
 
   if (!cartas || cartas.length === 0) return null;
 
-  // Atualiza raridades pelo Google (só para as que ainda não têm ou são antigas)
+  // Atualiza raridades via popularidade (busca Google)
   const cartasComRaridade = await Promise.all(
     cartas.map(async carta => {
       try {
@@ -154,10 +168,12 @@ async function sortearCarta() {
   return pool[Math.floor(Math.random() * pool.length)];
 }
 
-// Envia uma carta no canal com botão de capturar
+// ─── Envia uma carta no canal com botão de capturar ──────────────────────────
 async function enviarCartaSpawn(canal: TextChannel, guildId: string, client: Client) {
   const carta = await sortearCarta();
   if (!carta) return;
+
+  const emojiGen = EMOJI_GENERO[carta.genero] || '⚧️';
 
   const embed = new EmbedBuilder()
     .setColor(COR_RARIDADE[carta.raridade] as any)
@@ -165,7 +181,9 @@ async function enviarCartaSpawn(canal: TextChannel, guildId: string, client: Cli
     .addFields(
       { name: '👤 Personagem', value: carta.personagem, inline: true },
       { name: '📖 Vínculo', value: carta.vinculo, inline: true },
+      { name: `${emojiGen} Gênero`, value: carta.genero.charAt(0).toUpperCase() + carta.genero.slice(1), inline: true },
       { name: '✨ Raridade', value: carta.raridade.charAt(0).toUpperCase() + carta.raridade.slice(1), inline: true },
+      { name: '🏷️ Categoria', value: carta.categoria.charAt(0).toUpperCase() + carta.categoria.slice(1), inline: true },
     )
     .setDescription(carta.descricao || null)
     .setFooter({ text: '⚡ Clique rápido! Esta carta expira em 60 segundos.' })
@@ -182,7 +200,7 @@ async function enviarCartaSpawn(canal: TextChannel, guildId: string, client: Cli
 
   const msg = await canal.send({ embeds: [embed], components: [botao] });
 
-  // Salva no histórico
+  // Salva no histórico de spawns
   const { data: spawn } = await supabase
     .from('spawns_historico')
     .insert({
@@ -194,7 +212,7 @@ async function enviarCartaSpawn(canal: TextChannel, guildId: string, client: Cli
     .select()
     .single();
 
-  // Coletor — qualquer pessoa pode capturar
+  // Coletor — qualquer pessoa pode capturar (max: 1 clique)
   const coletor = msg.createMessageComponentCollector({
     componentType: ComponentType.Button,
     time: 60_000,
@@ -208,7 +226,6 @@ async function enviarCartaSpawn(canal: TextChannel, guildId: string, client: Cli
 
     const cargoIds = member ? [...member.roles.cache.keys()] : [];
 
-    // Verifica se pode capturar
     const verificacao = await podeCapturar(quemPegou.id, guildId, cargoIds);
     if (!verificacao.pode) {
       await btn.reply({ content: verificacao.motivo, ephemeral: true });
@@ -240,7 +257,10 @@ async function enviarCartaSpawn(canal: TextChannel, guildId: string, client: Cli
     if (spawn) {
       await supabase
         .from('spawns_historico')
-        .update({ capturada_por: quemPegou.id, capturada_em: new Date().toISOString() })
+        .update({
+          capturada_por: quemPegou.id,
+          capturada_em: new Date().toISOString(),
+        })
         .eq('id', spawn.id);
     }
 
@@ -293,7 +313,7 @@ async function enviarCartaSpawn(canal: TextChannel, guildId: string, client: Cli
   });
 }
 
-// Loop principal de spawn automático
+// ─── Loop principal de spawn automático ──────────────────────────────────────
 let spawnInterval: NodeJS.Timeout | null = null;
 let resetInterval: NodeJS.Timeout | null = null;
 
@@ -302,7 +322,6 @@ export async function iniciarSpawnAutomatico(client: Client) {
 
   console.log('🃏 Sistema de spawn automático iniciando...');
 
-  // Função que executa o spawn
   const executarSpawn = async () => {
     try {
       const config = await buscarConfig(guildId);
@@ -316,7 +335,6 @@ export async function iniciarSpawnAutomatico(client: Client) {
 
       console.log(`🃏 Spawning 10 cartas automáticas no canal ${canal.name}...`);
 
-      // Envia 10 cartas com 3 segundos de intervalo entre cada uma
       for (let i = 0; i < 10; i++) {
         await enviarCartaSpawn(canal, guildId, client);
         if (i < 9) await new Promise(resolve => setTimeout(resolve, 3000));
@@ -326,7 +344,6 @@ export async function iniciarSpawnAutomatico(client: Client) {
     }
   };
 
-  // Agenda o spawn com base na configuração do banco
   const agendarSpawn = async () => {
     const config = await buscarConfig(guildId);
     const intervaloMs = (config?.intervalo_spawn_minutos || 60) * 60 * 1000;
@@ -334,11 +351,9 @@ export async function iniciarSpawnAutomatico(client: Client) {
     if (spawnInterval) clearInterval(spawnInterval);
 
     spawnInterval = setInterval(async () => {
-      // Recarrega config a cada spawn para pegar atualizações do painel
       const configAtual = await buscarConfig(guildId);
       if (configAtual?.ativo) await executarSpawn();
 
-      // Reagenda com o intervalo atual (pode ter mudado no painel)
       const novoIntervalo = (configAtual?.intervalo_spawn_minutos || 60) * 60 * 1000;
       if (novoIntervalo !== intervaloMs) {
         clearInterval(spawnInterval!);
@@ -349,7 +364,6 @@ export async function iniciarSpawnAutomatico(client: Client) {
     console.log(`⏰ Spawn agendado a cada ${config?.intervalo_spawn_minutos || 60} minutos`);
   };
 
-  // Sistema de reset diário
   const agendarReset = async () => {
     const verificarReset = async () => {
       const config = await buscarConfig(guildId);
@@ -363,19 +377,15 @@ export async function iniciarSpawnAutomatico(client: Client) {
 
       if (hora === config.reset_capturas_hora && minuto === config.reset_capturas_minuto) {
         console.log('🔄 Executando reset diário de capturas...');
-        // O reset é feito automaticamente pela data no podeCapturar()
-        // Mas podemos limpar registros antigos para manter o banco limpo
         const ontemISO = new Date(agora.getTime() - 24 * 60 * 60 * 1000).toISOString();
         await supabase
           .from('capturas_diarias')
           .delete()
           .lt('data_reset', ontemISO);
-
         console.log('✅ Reset de capturas concluído');
       }
     };
 
-    // Verifica a cada minuto
     resetInterval = setInterval(verificarReset, 60_000);
   };
 

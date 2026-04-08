@@ -18,6 +18,10 @@ const EMOJI_RARIDADE: Record<string, string> = {
   comum: '⚪', incomum: '🟢', raro: '🔵', epico: '🟣', lendario: '🟡',
 };
 
+const EMOJI_GENERO: Record<string, string> = {
+  masculino: '♂️', feminino: '♀️', outros: '⚧️',
+};
+
 export const data = new SlashCommandBuilder()
   .setName('pesquisar-carta')
   .setDescription('Pesquisa uma carta da coleção NOITADA')
@@ -35,6 +39,30 @@ export const data = new SlashCommandBuilder()
     option.setName('busca')
       .setDescription('Digite o que deseja pesquisar')
       .setRequired(true)
+  )
+  .addStringOption(option =>
+    option.setName('categoria')
+      .setDescription('Filtrar por categoria (opcional)')
+      .setRequired(false)
+      .addChoices(
+        { name: '🎌 Anime', value: 'anime' },
+        { name: '📺 Série', value: 'serie' },
+        { name: '🎬 Filme', value: 'filme' },
+        { name: '🖼️ Desenho', value: 'desenho' },
+        { name: '🎮 Jogo', value: 'jogo' },
+        { name: '🎵 Música', value: 'musica' },
+        { name: '🌀 Outro', value: 'outro' },
+      )
+  )
+  .addStringOption(option =>
+    option.setName('genero')
+      .setDescription('Filtrar por gênero do personagem (opcional)')
+      .setRequired(false)
+      .addChoices(
+        { name: '♂️ Masculino', value: 'masculino' },
+        { name: '♀️ Feminino', value: 'feminino' },
+        { name: '⚧️ Outros', value: 'outros' },
+      )
   );
 
 export const execute = async (interaction: ChatInputCommandInteraction) => {
@@ -43,6 +71,8 @@ export const execute = async (interaction: ChatInputCommandInteraction) => {
   try {
     const tipo = interaction.options.getString('tipo', true);
     const busca = interaction.options.getString('busca', true);
+    const categoria = interaction.options.getString('categoria');
+    const genero = interaction.options.getString('genero');
 
     let query = supabase
       .from('cartas')
@@ -53,12 +83,21 @@ export const execute = async (interaction: ChatInputCommandInteraction) => {
     else if (tipo === 'personagem') query = query.ilike('personagem', `%${busca}%`);
     else if (tipo === 'vinculo') query = query.ilike('vinculo', `%${busca}%`);
 
+    if (categoria) query = query.eq('categoria', categoria);
+    if (genero) query = query.eq('genero', genero);
+
     const { data: cartas, error } = await query.limit(20);
 
     if (error) throw error;
 
     if (!cartas || cartas.length === 0) {
-      await interaction.editReply({ content: `❌ Nenhuma carta encontrada para **${busca}**.` });
+      const filtros = [
+        `"${busca}"`,
+        categoria ? `categoria **${categoria}**` : null,
+        genero ? `gênero **${genero}**` : null,
+      ].filter(Boolean).join(', ');
+
+      await interaction.editReply({ content: `❌ Nenhuma carta encontrada para ${filtros}.` });
       return;
     }
 
@@ -72,6 +111,7 @@ export const execute = async (interaction: ChatInputCommandInteraction) => {
         .addFields(
           { name: '📖 Vínculo', value: carta.vinculo, inline: true },
           { name: '🏷️ Categoria', value: carta.categoria, inline: true },
+          { name: `${EMOJI_GENERO[carta.genero] || '⚧️'} Gênero`, value: carta.genero.charAt(0).toUpperCase() + carta.genero.slice(1), inline: true },
           { name: '✨ Raridade', value: carta.raridade.charAt(0).toUpperCase() + carta.raridade.slice(1), inline: true },
         )
         .setFooter({ text: `Resultado ${i + 1} de ${cartas.length} • ${carta.nome}` })
@@ -121,7 +161,7 @@ export const execute = async (interaction: ChatInputCommandInteraction) => {
     });
 
   } catch (error: any) {
-    console.error('Erro no /carta:', error);
+    console.error('Erro no /pesquisar-carta:', error);
     await interaction.editReply({ content: '❌ Erro ao pesquisar carta.' });
   }
 };
