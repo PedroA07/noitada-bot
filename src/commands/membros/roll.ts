@@ -1,157 +1,232 @@
+// src/commands/membros/rolls.ts
 import {
   SlashCommandBuilder,
   ChatInputCommandInteraction,
   EmbedBuilder,
-  ActionRowBuilder,
-  ButtonBuilder,
-  ButtonStyle,
   MessageFlags,
 } from 'discord.js';
 import { supabase } from '../../lib/supabase';
 
+const COR_RARIDADE: Record<string, string> = {
+  comum: '#9CA3AF', incomum: '#10B981', raro: '#3B82F6',
+  epico: '#8B5CF6', lendario: '#F59E0B',
+};
+
+const EMOJI_RARIDADE: Record<string, string> = {
+  comum: '⚪', incomum: '🟢', raro: '🔵', epico: '🟣', lendario: '🟡',
+};
+
+// URL base do site — usada para gerar a imagem do card
+const SITE_URL = process.env.SITE_URL || 'https://www.noitadaserver.com.br';
+
 export const data = new SlashCommandBuilder()
   .setName('roll')
-  .setDescription('Ganhe capturas extras assistindo um anúncio!');
+  .setDescription('Sorteia carta(s) aleatória(s) da coleção NOITADA')
+  .addStringOption(option =>
+    option.setName('categoria')
+      .setDescription('Filtrar por categoria (opcional)')
+      .setRequired(false)
+      .addChoices(
+        { name: '🎌 Anime',   value: 'anime'   },
+        { name: '📺 Série',   value: 'serie'   },
+        { name: '🎬 Filme',   value: 'filme'   },
+        { name: '🖼️ Desenho', value: 'desenho' },
+        { name: '🎮 Jogo',    value: 'jogo'    },
+        { name: '🎵 Música',  value: 'musica'  },
+        { name: '🌀 Outro',   value: 'outro'   },
+      )
+  );
+
+async function buscarConfigUsuario(guildId: string, cargoIds: string[]) {
+  const { data: configs } = await supabase
+    .from('configuracoes_roll')
+    .select('*')
+    .eq('guild_id', guildId)
+    .in('cargo_id', cargoIds);
+
+  if (!configs || configs.length === 0) return null;
+  return configs.reduce((melhor, atual) =>
+    atual.cartas_por_roll > melhor.cartas_por_roll ? atual : melhor
+  );
+}
+
+async function verificarCooldown(
+  userId: string,
+  guildId: string,
+  config: any
+): Promise<{ pode: boolean; mensagem?: string }> {
+  const cooldownMs = config.cooldown_unidade === 'horas'
+    ? config.cooldown_valor * 60 * 60 * 1000
+    : config.cooldown_valor * 60 * 1000;
+
+  const desde = new Date(Date.now() - cooldownMs).toISOString();
+
+  const { data: usos } = await supabase
+    .from('rolls_usuarios')
+    .select('id, usado_em')
+    .eq('discord_id', userId)
+    .eq('guild_id', guildId)
+    .gte('usado_em', desde)
+    .order('usado_em', { ascending: false });
+
+  if (!usos || usos.length === 0) return { pode: true };
+
+  if (usos.length >= config.rolls_por_periodo) {
+    const maisAntigo  = new Date(usos[usos.length - 1].usado_em);
+    const liberaEm    = new Date(maisAntigo.getTime() + cooldownMs);
+    const restanteMs  = liberaEm.getTime() - Date.now();
+    const restanteMin = Math.ceil(restanteMs / 60000);
+    const restanteH   = Math.floor(restanteMin / 60);
+    const restanteSeg = Math.ceil((restanteMs % 60000) / 1000);
+
+    const textoEspera =
+      restanteH   > 0 ? `${restanteH}h ${restanteMin % 60}min` :
+      restanteMin > 1 ? `${restanteMin} minutos` :
+                        `${restanteSeg} segundos`;
+
+    return {
+      pode: false,
+      mensagem: `⏳ Você usou todos os **${config.rolls_por_periodo} rolls** do período!\nPróximo roll disponível em **${textoEspera}**.`,
+    };
+  }
+
+  return { pode: true };
+}
+
+// Retorna a URL da imagem a usar no embed:
+// - GIFs: usa a URL direta (Discord anima nativamente)
+// - Outros: usa a API de geração de card 9:16
+function urlImagemCard(cartaId: string, imagemUrl: string | null): string | null {
+  if (!imagemUrl) return null;
+
+  // GIFs: usa diretamente (Discord renderiza GIF animado em setImage)
+  if (imagemUrl.toLowerCase().endsWith('.gif')) {
+    return imagemUrl;
+  }
+
+  // Para imagens estáticas, gera o card 9:16 via API do site
+  return `${SITE_URL}/api/cartas/imagem?id=${cartaId}`;
+}
 
 export const execute = async (interaction: ChatInputCommandInteraction) => {
-  const userId = interaction.user.id;
-  const guildId = interaction.guildId!;
+  const userId  = interaction.user.id;
+  const guildId = process.env.DISCORD_GUILD_ID!;
+  const member  = interaction.guild?.members.cache.get(userId)
+    || await interaction.guild?.members.fetch(userId).catch(() => null);
 
-  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+  await interaction.deferReply();
 
   try {
-    // Verifica quantos rolls extras já tem hoje
-    const hoje = new Date().toDateString();
-    const { data: capturaDiaria } = await supabase
-      .from('capturas_diarias')
-      .select('rolls_extras')
-      .eq('discord_id', userId)
-      .eq('guild_id', guildId)
-      .gte('data_reset', hoje)
-      .maybeSingle();
+    const categoria = interaction.options.getString('categoria');
+    const cargoIds  = member ? [...member.roles.cache.keys()] : [];
+    const config    = await buscarConfigUsuario(guildId, cargoIds);
 
-    const rollsExtras = capturaDiaria?.rolls_extras || 0;
-    const MAX_ROLLS_DIA = 5; // máximo de rolls extras por dia
+    const configFinal = config || {
+      cooldown_valor: 30,
+      cooldown_unidade: 'minutos',
+      rolls_por_periodo: 5,
+      cartas_por_roll: 1,
+    };
 
-    if (rollsExtras >= MAX_ROLLS_DIA) {
+    const verificacao = await verificarCooldown(userId, guildId, configFinal);
+    if (!verificacao.pode) {
+      await interaction.editReply({ content: verificacao.mensagem });
+      return;
+    }
+
+    let query = supabase
+      .from('cartas')
+      .select('id, nome, personagem, vinculo, categoria, raridade, imagem_url, descricao')
+      .eq('ativa', true);
+
+    if (categoria) query = query.eq('categoria', categoria);
+
+    const { data: cartas, error } = await query;
+
+    if (error || !cartas || cartas.length === 0) {
       await interaction.editReply({
-        content: `❌ Você já usou todos os seus **${MAX_ROLLS_DIA} rolls extras** de hoje!\n\nVolte amanhã para mais. 🌙`,
+        content: categoria
+          ? `❌ Nenhuma carta encontrada na categoria **${categoria}**.`
+          : '❌ Nenhuma carta cadastrada ainda.',
       });
       return;
     }
 
-    const embed = new EmbedBuilder()
-      .setColor('#F59E0B')
-      .setTitle('🎲 Roll Extra')
-      .setDescription(
-        [
-          `Você tem **${rollsExtras}/${MAX_ROLLS_DIA}** rolls extras usados hoje.`,
-          '',
-          '📺 Assista um anúncio para ganhar **+1 captura extra** agora!',
-          '',
-          '> Isso permite capturar uma carta além do seu limite diário.',
-        ].join('\n')
-      )
-      .setFooter({ text: 'NOITADA • Sistema de Rolls' });
+    // Pool ponderado por raridade
+    const pesos: Record<string, number> = {
+      comum: 50, incomum: 25, raro: 15, epico: 7, lendario: 3,
+    };
+    const pool: typeof cartas = [];
+    for (const carta of cartas) {
+      const peso = pesos[carta.raridade] || 10;
+      for (let i = 0; i < peso; i++) pool.push(carta);
+    }
 
-    const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
-      new ButtonBuilder()
-        .setCustomId(`assistir_ad_${userId}`)
-        .setLabel('📺 Assistir Anúncio')
-        .setStyle(ButtonStyle.Primary),
-      new ButtonBuilder()
-        .setCustomId(`cancelar_roll_${userId}`)
-        .setLabel('Cancelar')
-        .setStyle(ButtonStyle.Secondary),
-    );
+    const qtdCartas    = configFinal.cartas_por_roll;
+    const cartasSorteadas: typeof cartas = [];
+    for (let i = 0; i < qtdCartas; i++) {
+      cartasSorteadas.push(pool[Math.floor(Math.random() * pool.length)]);
+    }
 
-    const msg = await interaction.editReply({ embeds: [embed], components: [row] });
+    await supabase.from('rolls_usuarios').insert({ discord_id: userId, guild_id: guildId });
 
-    const collector = msg.createMessageComponentCollector({
-      time: 120_000,
-    });
+    const embeds: EmbedBuilder[] = [];
 
-    collector.on('collect', async (btn) => {
-      const [acao, , donoId] = btn.customId.split('_');
-
-      if (btn.user.id !== donoId) {
-        await btn.reply({ content: '❌ Esse roll não é seu!', flags: MessageFlags.Ephemeral });
-        return;
-      }
-
-      await btn.deferUpdate();
-
-      if (acao === 'cancelar') {
-        await interaction.editReply({ content: '❌ Roll cancelado.', embeds: [], components: [] });
-        collector.stop();
-        return;
-      }
-
-      // Simula o fluxo de ad (na prática, o app mobile/web confirma via API)
-      // Aqui no bot, confiamos no clique — em produção, o mobile chama uma API
-      // que valida o ad completion e só aí libera o roll
-      const embedProcessando = new EmbedBuilder()
-        .setColor('#F59E0B')
-        .setTitle('⏳ Processando...')
-        .setDescription('Confirmando seu anúncio...');
-
-      await interaction.editReply({ embeds: [embedProcessando], components: [] });
-
-      // Incrementa rolls_extras
-      const { data: capturaDiariaAtual } = await supabase
-        .from('capturas_diarias')
-        .select('*')
+    for (const cartaSorteada of cartasSorteadas) {
+      const { data: jaTemCarta } = await supabase
+        .from('cartas_usuarios')
+        .select('id, quantidade')
         .eq('discord_id', userId)
-        .eq('guild_id', guildId)
-        .gte('data_reset', hoje)
+        .eq('carta_id', cartaSorteada.id)
         .maybeSingle();
 
-      if (capturaDiariaAtual) {
+      if (jaTemCarta) {
         await supabase
-          .from('capturas_diarias')
-          .update({ rolls_extras: (capturaDiariaAtual.rolls_extras || 0) + 1 })
-          .eq('id', capturaDiariaAtual.id);
+          .from('cartas_usuarios')
+          .update({ quantidade: jaTemCarta.quantidade + 1 })
+          .eq('id', jaTemCarta.id);
       } else {
         await supabase
-          .from('capturas_diarias')
-          .insert({
-            discord_id: userId,
-            guild_id: guildId,
-            data_reset: new Date().toISOString(),
-            total_capturas: 0,
-            rolls_extras: 1,
-          });
+          .from('cartas_usuarios')
+          .insert({ discord_id: userId, carta_id: cartaSorteada.id });
       }
 
-      const embedSucesso = new EmbedBuilder()
-        .setColor('#22c55e')
-        .setTitle('✅ Roll Extra Liberado!')
+      const urlImg = urlImagemCard(cartaSorteada.id, cartaSorteada.imagem_url);
+
+      const embed = new EmbedBuilder()
+        .setColor(COR_RARIDADE[cartaSorteada.raridade] as any)
+        .setTitle(`${EMOJI_RARIDADE[cartaSorteada.raridade]} ${cartaSorteada.personagem}`)
         .setDescription(
           [
-            '🎉 Você ganhou **+1 captura extra** para hoje!',
-            '',
-            `Agora você tem **${rollsExtras + 1}/${MAX_ROLLS_DIA}** rolls extras usados.`,
-            '',
-            'Use `/spawn` para capturar uma carta! 🃏',
-          ].join('\n')
-        );
+            `📖 **Vínculo:** ${cartaSorteada.vinculo}`,
+            `🏷️ **Categoria:** ${cartaSorteada.categoria}`,
+            `✨ **Raridade:** ${cartaSorteada.raridade.charAt(0).toUpperCase() + cartaSorteada.raridade.slice(1)}`,
+            cartaSorteada.descricao ? `\n${cartaSorteada.descricao}` : '',
+            jaTemCarta
+              ? `\n🔄 Duplicata! Agora tem **${jaTemCarta.quantidade + 1}x**.`
+              : '\n🆕 **Nova carta!**',
+          ].filter(Boolean).join('\n')
+        )
+        .setFooter({
+          text: `${interaction.user.username} • ${
+            qtdCartas > 1
+              ? `${cartasSorteadas.indexOf(cartaSorteada) + 1}/${qtdCartas} cartas`
+              : `Cooldown: ${configFinal.cooldown_valor} ${configFinal.cooldown_unidade}`
+          }`,
+          iconURL: interaction.user.displayAvatarURL(),
+        })
+        .setTimestamp();
 
-      await interaction.editReply({ embeds: [embedSucesso], components: [] });
-      collector.stop();
-    });
+      // Usa o card 9:16 gerado pela API (ou GIF direto)
+      if (urlImg) embed.setImage(urlImg);
 
-    collector.on('end', async (_, reason) => {
-      if (reason === 'time') {
-        await interaction.editReply({
-          content: '⏰ Tempo esgotado.',
-          embeds: [],
-          components: [],
-        }).catch(() => {});
-      }
-    });
+      embeds.push(embed);
+    }
+
+    await interaction.editReply({ embeds: embeds.slice(0, 10) });
 
   } catch (error: any) {
     console.error('Erro no /roll:', error);
-    await interaction.editReply({ content: '❌ Erro. Tente novamente!' });
+    await interaction.editReply({ content: '❌ Erro ao sortear carta. Tente novamente!' });
   }
 };
