@@ -7,6 +7,7 @@ import {
   MessageFlags,
   AttachmentBuilder,
 } from 'discord.js';
+import sharp from 'sharp';
 import { supabase } from '../../lib/supabase';
 
 const PESOS_SPAWN: Record<string, number> = {
@@ -21,6 +22,20 @@ const EMOJI_RARIDADE: Record<string, string> = {
   comum: '⚪', incomum: '🟢', raro: '🔵', epico: '🟣', lendario: '🟡',
 };
 
+const COR_RARIDADE: Record<string, string> = {
+  comum: '#9CA3AF', incomum: '#10B981', raro: '#3B82F6',
+  epico: '#8B5CF6', lendario: '#F59E0B',
+};
+
+const SIMBOLO_RARIDADE: Record<string, string> = {
+  comum: '●', incomum: '▲', raro: '◆', epico: '★', lendario: '✦',
+};
+
+const EMOJI_CATEGORIA: Record<string, string> = {
+  anime: '😊', serie: '📺', filme: '🎬', desenho: '🖼', jogo: '🎮',
+  musica: '🎵', outro: '🌀',
+};
+
 function calcPts(raridade: string, personagem: string, vinculo: string): number {
   const base = PONTOS_BASE[raridade] ?? 1;
   let h = 0;
@@ -29,42 +44,92 @@ function calcPts(raridade: string, personagem: string, vinculo: string): number 
   return base + (Math.abs(h) % 50);
 }
 
-const SITE_URL = (process.env.SITE_URL || 'https://www.noitadaserver.com.br').replace(/\/$/, '');
+function xmlEsc(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
 
-async function buscarImagemCard(cartaId: string, imagemUrl: string | null): Promise<Buffer | null> {
-  if (!imagemUrl) return null;
+function truncate(s: string, max: number): string {
+  return s.length > max ? s.slice(0, max - 1) + '…' : s;
+}
 
-  // GIF: usa diretamente a URL do R2
-  if (imagemUrl.toLowerCase().endsWith('.gif')) {
-    try {
-      const res = await fetch(imagemUrl);
-      if (!res.ok) return null;
-      const buf = Buffer.from(await res.arrayBuffer());
-      return buf.length > 0 ? buf : null;
-    } catch {
-      return null;
-    }
-  }
-
-  // Tenta buscar o card 9:16 renderizado pela API do site
+async function gerarCardImagem(
+  imagemUrl: string,
+  personagem: string,
+  vinculo: string,
+  raridade: string,
+  categoria: string,
+  descricao: string | null,
+  pts: number,
+): Promise<Buffer | null> {
   try {
-    const urlCard = `${SITE_URL}/api/cartas/imagem?id=${cartaId}`;
-    const res = await fetch(urlCard, { signal: AbortSignal.timeout(8000) });
-    if (res.ok) {
-      const buf = Buffer.from(await res.arrayBuffer());
-      if (buf.length > 0) return buf;
-    }
-  } catch {
-    // API do site falhou — usa fallback abaixo
-  }
+    const isGif = imagemUrl.toLowerCase().endsWith('.gif');
 
-  // Fallback: imagem direta do R2
-  try {
+    // Busca imagem original do R2
     const res = await fetch(imagemUrl);
     if (!res.ok) return null;
-    const buf = Buffer.from(await res.arrayBuffer());
-    return buf.length > 0 ? buf : null;
-  } catch {
+    const imgBuf = Buffer.from(await res.arrayBuffer());
+    if (imgBuf.length === 0) return null;
+
+    // GIF: devolve direto (sharp não processa GIF animado)
+    if (isGif) return imgBuf;
+
+    const W = 380;
+    const H = 570;
+
+    const cor = COR_RARIDADE[raridade] || '#9CA3AF';
+    const simbolo = SIMBOLO_RARIDADE[raridade] || '●';
+    const labelRar = xmlEsc(simbolo + ' ' + raridade.toUpperCase());
+    const labelCat = xmlEsc((EMOJI_CATEGORIA[categoria] || '') + ' ' + truncate(categoria.charAt(0).toUpperCase() + categoria.slice(1), 10));
+    const nome = xmlEsc(truncate(personagem, 24));
+    const franquia = xmlEsc(truncate(vinculo.toUpperCase(), 28));
+    const desc = descricao ? xmlEsc(truncate(descricao, 42)) : '';
+
+    const overlay = Buffer.from(`<svg width="${W}" height="${H}" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <linearGradient id="grad" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%"   stop-color="#000" stop-opacity="0"/>
+          <stop offset="55%"  stop-color="#000" stop-opacity="0.65"/>
+          <stop offset="100%" stop-color="#000" stop-opacity="0.92"/>
+        </linearGradient>
+      </defs>
+
+      <!-- gradiente inferior -->
+      <rect x="0" y="${H * 0.38}" width="${W}" height="${H * 0.62}" fill="url(#grad)"/>
+
+      <!-- borda da raridade -->
+      <rect x="0" y="0" width="${W}" height="${H}" rx="12" ry="12"
+            fill="none" stroke="${cor}" stroke-width="4" stroke-opacity="0.85"/>
+
+      <!-- badge raridade (esquerda) -->
+      <rect x="10" y="10" width="128" height="26" rx="6" fill="${cor}" fill-opacity="0.88"/>
+      <text x="20" y="28" font-family="Arial,sans-serif" font-size="13" font-weight="bold" fill="white">${labelRar}</text>
+
+      <!-- badge categoria (direita) -->
+      <rect x="${W - 110}" y="10" width="100" height="26" rx="6" fill="rgba(0,0,0,0.72)"/>
+      <text x="${W - 100}" y="28" font-family="Arial,sans-serif" font-size="12" fill="white">${labelCat}</text>
+
+      <!-- nome do personagem -->
+      <text x="16" y="${H - 84}" font-family="Arial,sans-serif" font-size="21" font-weight="bold" fill="white">${nome}</text>
+
+      <!-- franquia -->
+      <text x="16" y="${H - 60}" font-family="Arial,sans-serif" font-size="11" fill="rgba(255,255,255,0.65)" letter-spacing="1.5">${franquia}</text>
+
+      <!-- descrição -->
+      ${desc ? `<text x="16" y="${H - 38}" font-family="Arial,sans-serif" font-size="11" fill="rgba(255,255,255,0.55)">${desc}</text>` : ''}
+
+      <!-- pontos -->
+      <text x="${W - 14}" y="${H - 14}" font-family="Arial,sans-serif" font-size="15" font-weight="bold"
+            fill="${cor}" text-anchor="end">★ ${pts} pts</text>
+    </svg>`);
+
+    return await sharp(imgBuf)
+      .resize(W, H, { fit: 'cover', position: 'top' })
+      .composite([{ input: overlay, gravity: 'northwest' }])
+      .png()
+      .toBuffer();
+
+  } catch (err: any) {
+    console.error('[spawn] erro ao gerar card:', err?.message);
     return null;
   }
 }
@@ -206,7 +271,9 @@ export const execute = async (interaction: ChatInputCommandInteraction) => {
         .setStyle(ButtonStyle.Success),
     );
 
-    const imageBuffer = await buscarImagemCard(carta.id, carta.imagem_url);
+    const imageBuffer = carta.imagem_url
+      ? await gerarCardImagem(carta.imagem_url, carta.personagem, carta.vinculo, carta.raridade, carta.categoria, carta.descricao ?? null, pts)
+      : null;
 
     let msg;
     if (imageBuffer) {
