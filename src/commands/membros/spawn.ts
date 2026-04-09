@@ -27,6 +27,16 @@ const COR_RARIDADE: Record<string, string> = {
   epico: '#8B5CF6', lendario: '#F59E0B',
 };
 
+// Fundo escuro com tint da raridade (igual ao site)
+const COR_BOTTOM: Record<string, string> = {
+  comum: '#111214', incomum: '#08150d', raro: '#080d18',
+  epico: '#0e0815', lendario: '#160f00',
+};
+
+const PESO_PONTUACAO: Record<string, number> = {
+  lendario: 1000, epico: 200, raro: 50, incomum: 10, comum: 1,
+};
+
 const SIMBOLO_RARIDADE: Record<string, string> = {
   comum: '●', incomum: '▲', raro: '◆', epico: '★', lendario: '✦',
 };
@@ -52,8 +62,27 @@ function truncate(s: string, max: number): string {
   return s.length > max ? s.slice(0, max - 1) + '…' : s;
 }
 
+// Calcula posição do usuário no ranking geral
+async function buscarRankingUsuario(userId: string): Promise<number | null> {
+  const { data } = await supabase
+    .from('cartas_usuarios')
+    .select('discord_id, quantidade, carta:carta_id(raridade)');
+
+  if (!data?.length) return null;
+
+  const map = new Map<string, number>();
+  for (const cu of data) {
+    const carta = cu.carta as any;
+    map.set(cu.discord_id, (map.get(cu.discord_id) || 0) + (PESO_PONTUACAO[carta?.raridade] || 1) * cu.quantidade);
+  }
+
+  if (!map.has(userId)) return null;
+  const meusPts = map.get(userId)!;
+  return [...map.values()].filter(p => p > meusPts).length + 1;
+}
+
 // Gera o card visual no estilo do site:
-// imagem do personagem (70%) + seção inferior sólida (30%) + glow externo colorido
+// imagem do personagem (70%) + seção inferior com tint da raridade (30%) + glow externo
 async function gerarCardImagem(
   imagemUrl: string,
   personagem: string,
@@ -62,6 +91,7 @@ async function gerarCardImagem(
   categoria: string,
   descricao: string | null,
   pts: number,
+  rankingPos: number | null,
 ): Promise<Buffer | null> {
   try {
     const isGif = imagemUrl.toLowerCase().endsWith('.gif');
@@ -84,12 +114,14 @@ async function gerarCardImagem(
     const RX = 14;
 
     const cor = COR_RARIDADE[raridade] || '#9CA3AF';
+    const botBg = COR_BOTTOM[raridade] || '#111214';
     const sim = SIMBOLO_RARIDADE[raridade] || '●';
     const labelRar = xmlEsc(`${sim} ${raridade.toUpperCase()}`);
     const labelCat = xmlEsc(LABEL_CATEGORIA[categoria] || categoria);
     const nome = xmlEsc(truncate(personagem, 22));
     const franquia = xmlEsc(truncate(vinculo.toUpperCase(), 28));
     const desc = descricao ? xmlEsc(truncate(descricao, 44)) : '';
+    const rankLabel = rankingPos ? xmlEsc(`#${rankingPos}`) : '';
 
     // 1. Foto do personagem redimensionada
     const charBuf = await sharp(imgBuf)
@@ -97,14 +129,15 @@ async function gerarCardImagem(
       .png()
       .toBuffer();
 
-    // 2. Seção inferior (fundo sólido + texto)
+    // 2. Seção inferior — fundo com tint da raridade, franquia na cor da raridade
     const botSvg = `<svg width="${CW}" height="${BOT_H}" xmlns="http://www.w3.org/2000/svg">
-      <rect width="${CW}" height="${BOT_H}" fill="#0e0e0e"/>
+      <rect width="${CW}" height="${BOT_H}" fill="${botBg}"/>
       <text x="12" y="32" font-family="sans-serif" font-size="19" font-weight="bold" fill="white">${nome}</text>
-      <text x="12" y="52" font-family="sans-serif" font-size="10" fill="rgba(255,255,255,0.45)" letter-spacing="1.2">${franquia}</text>
-      ${desc ? `<text x="12" y="70" font-family="sans-serif" font-size="10" fill="rgba(255,255,255,0.35)">${desc}</text>` : ''}
-      <line x1="10" y1="96" x2="${CW - 10}" y2="96" stroke="rgba(255,255,255,0.07)" stroke-width="1"/>
-      <text x="12" y="116" font-family="sans-serif" font-size="10" fill="rgba(255,255,255,0.3)">&#9733; PTS</text>
+      <text x="12" y="52" font-family="sans-serif" font-size="10" font-weight="bold" fill="${cor}" letter-spacing="1.2">${franquia}</text>
+      ${desc ? `<text x="12" y="70" font-family="sans-serif" font-size="10" fill="rgba(255,255,255,0.38)">${desc}</text>` : ''}
+      <line x1="10" y1="96" x2="${CW - 10}" y2="96" stroke="${cor}" stroke-opacity="0.15" stroke-width="1"/>
+      ${rankLabel ? `<text x="12" y="116" font-family="sans-serif" font-size="13" font-weight="bold" fill="${cor}">${rankLabel}</text>` : ''}
+      <text x="${rankLabel ? CW / 2 : 12}" y="116" font-family="sans-serif" font-size="10" fill="rgba(255,255,255,0.28)">&#9733; PTS</text>
       <text x="${CW - 12}" y="116" font-family="sans-serif" font-size="14" font-weight="bold" fill="${cor}" text-anchor="end">${pts.toLocaleString('pt-BR')}</text>
     </svg>`;
     const botBuf = await sharp(Buffer.from(botSvg)).png().toBuffer();
@@ -289,9 +322,15 @@ export const execute = async (interaction: ChatInputCommandInteraction) => {
     const pts = calcPts(carta.raridade, carta.personagem, carta.vinculo);
     const emoji = EMOJI_RARIDADE[carta.raridade] ?? '❓';
 
+    const rankingPos = await buscarRankingUsuario(userId);
+    const imageBuffer = carta.imagem_url
+      ? await gerarCardImagem(carta.imagem_url, carta.personagem, carta.vinculo, carta.raridade, carta.categoria, carta.descricao ?? null, pts, rankingPos)
+      : null;
+
+    const rankLabel = rankingPos ? ` • 🏅 **#${rankingPos}** no ranking` : '';
     const textoSpawn = [
       `${emoji} **${carta.personagem}** — ${carta.vinculo}`,
-      `✨ ${carta.raridade.charAt(0).toUpperCase() + carta.raridade.slice(1)} • ⭐ ${pts.toLocaleString('pt-BR')} pts`,
+      `✨ ${carta.raridade.charAt(0).toUpperCase() + carta.raridade.slice(1)} • ⭐ ${pts.toLocaleString('pt-BR')} pts${rankLabel}`,
       `\n🖐️ **Clique em Capturar para pegar essa carta!**`,
     ].join('\n');
 
@@ -301,10 +340,6 @@ export const execute = async (interaction: ChatInputCommandInteraction) => {
         .setLabel('🖐️ Capturar!')
         .setStyle(ButtonStyle.Success),
     );
-
-    const imageBuffer = carta.imagem_url
-      ? await gerarCardImagem(carta.imagem_url, carta.personagem, carta.vinculo, carta.raridade, carta.categoria, carta.descricao ?? null, pts)
-      : null;
 
     let msg;
     if (imageBuffer) {
