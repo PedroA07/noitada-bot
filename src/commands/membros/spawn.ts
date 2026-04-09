@@ -31,9 +31,9 @@ const SIMBOLO_RARIDADE: Record<string, string> = {
   comum: '●', incomum: '▲', raro: '◆', epico: '★', lendario: '✦',
 };
 
-const EMOJI_CATEGORIA: Record<string, string> = {
-  anime: '😊', serie: '📺', filme: '🎬', desenho: '🖼', jogo: '🎮',
-  musica: '🎵', outro: '🌀',
+const LABEL_CATEGORIA: Record<string, string> = {
+  anime: 'Anime', serie: 'Serie', filme: 'Filme', desenho: 'Desenho',
+  jogo: 'Jogo', musica: 'Musica', outro: 'Outro', hq: 'HQ',
 };
 
 function calcPts(raridade: string, personagem: string, vinculo: string): number {
@@ -52,6 +52,8 @@ function truncate(s: string, max: number): string {
   return s.length > max ? s.slice(0, max - 1) + '…' : s;
 }
 
+// Gera o card visual no estilo do site:
+// imagem do personagem (70%) + seção inferior sólida (30%) + glow externo colorido
 async function gerarCardImagem(
   imagemUrl: string,
   personagem: string,
@@ -64,67 +66,95 @@ async function gerarCardImagem(
   try {
     const isGif = imagemUrl.toLowerCase().endsWith('.gif');
 
-    // Busca imagem original do R2
     const res = await fetch(imagemUrl);
     if (!res.ok) return null;
     const imgBuf = Buffer.from(await res.arrayBuffer());
     if (imgBuf.length === 0) return null;
 
-    // GIF: devolve direto (sharp não processa GIF animado)
     if (isGif) return imgBuf;
 
-    const W = 380;
-    const H = 570;
+    // Dimensões — mesma proporção do site
+    const CW = 300;
+    const IMG_H = 360;   // altura da foto do personagem
+    const BOT_H = 130;   // altura da seção inferior com texto
+    const CH = IMG_H + BOT_H;
+    const GLOW = 26;     // margem para o glow externo
+    const TW = CW + GLOW * 2;
+    const TH = CH + GLOW * 2;
+    const RX = 14;
 
     const cor = COR_RARIDADE[raridade] || '#9CA3AF';
-    const simbolo = SIMBOLO_RARIDADE[raridade] || '●';
-    const labelRar = xmlEsc(simbolo + ' ' + raridade.toUpperCase());
-    const labelCat = xmlEsc((EMOJI_CATEGORIA[categoria] || '') + ' ' + truncate(categoria.charAt(0).toUpperCase() + categoria.slice(1), 10));
-    const nome = xmlEsc(truncate(personagem, 24));
+    const sim = SIMBOLO_RARIDADE[raridade] || '●';
+    const labelRar = xmlEsc(`${sim} ${raridade.toUpperCase()}`);
+    const labelCat = xmlEsc(LABEL_CATEGORIA[categoria] || categoria);
+    const nome = xmlEsc(truncate(personagem, 22));
     const franquia = xmlEsc(truncate(vinculo.toUpperCase(), 28));
-    const desc = descricao ? xmlEsc(truncate(descricao, 42)) : '';
+    const desc = descricao ? xmlEsc(truncate(descricao, 44)) : '';
 
-    const overlay = Buffer.from(`<svg width="${W}" height="${H}" xmlns="http://www.w3.org/2000/svg">
+    // 1. Foto do personagem redimensionada
+    const charBuf = await sharp(imgBuf)
+      .resize(CW, IMG_H, { fit: 'cover', position: 'top' })
+      .png()
+      .toBuffer();
+
+    // 2. Seção inferior (fundo sólido + texto)
+    const botSvg = `<svg width="${CW}" height="${BOT_H}" xmlns="http://www.w3.org/2000/svg">
+      <rect width="${CW}" height="${BOT_H}" fill="#0e0e0e"/>
+      <text x="12" y="32" font-family="sans-serif" font-size="19" font-weight="bold" fill="white">${nome}</text>
+      <text x="12" y="52" font-family="sans-serif" font-size="10" fill="rgba(255,255,255,0.45)" letter-spacing="1.2">${franquia}</text>
+      ${desc ? `<text x="12" y="70" font-family="sans-serif" font-size="10" fill="rgba(255,255,255,0.35)">${desc}</text>` : ''}
+      <line x1="10" y1="96" x2="${CW - 10}" y2="96" stroke="rgba(255,255,255,0.07)" stroke-width="1"/>
+      <text x="12" y="116" font-family="sans-serif" font-size="10" fill="rgba(255,255,255,0.3)">&#9733; PTS</text>
+      <text x="${CW - 12}" y="116" font-family="sans-serif" font-size="14" font-weight="bold" fill="${cor}" text-anchor="end">${pts.toLocaleString('pt-BR')}</text>
+    </svg>`;
+    const botBuf = await sharp(Buffer.from(botSvg)).png().toBuffer();
+
+    // 3. Badges sobrepostos no topo da foto
+    const badgeSvg = `<svg width="${CW}" height="46" xmlns="http://www.w3.org/2000/svg">
+      <rect x="8" y="8" width="116" height="26" rx="6" fill="${cor}" fill-opacity="0.92"/>
+      <text x="18" y="26" font-family="sans-serif" font-size="12" font-weight="bold" fill="white">${labelRar}</text>
+      <rect x="${CW - 92}" y="8" width="84" height="26" rx="6" fill="rgba(8,8,8,0.80)"/>
+      <text x="${CW - 82}" y="26" font-family="sans-serif" font-size="11" fill="rgba(255,255,255,0.85)">${labelCat}</text>
+    </svg>`;
+    const badgeBuf = await sharp(Buffer.from(badgeSvg)).png().toBuffer();
+
+    // 4. Monta o card (foto + seção inferior + badges)
+    const cardBuf = await sharp({
+      create: { width: CW, height: CH, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0 } },
+    })
+      .composite([
+        { input: charBuf, top: 0, left: 0 },
+        { input: botBuf, top: IMG_H, left: 0 },
+        { input: badgeBuf, top: 0, left: 0 },
+      ])
+      .png()
+      .toBuffer();
+
+    // 5. Borda colorida sobre o card
+    const bordaSvg = `<svg width="${CW}" height="${CH}" xmlns="http://www.w3.org/2000/svg">
+      <rect x="1" y="1" width="${CW - 2}" height="${CH - 2}" rx="${RX}" ry="${RX}"
+            fill="none" stroke="${cor}" stroke-width="3"/>
+    </svg>`;
+    const cardComBorda = await sharp(cardBuf)
+      .composite([{ input: Buffer.from(bordaSvg), top: 0, left: 0 }])
+      .png()
+      .toBuffer();
+
+    // 6. Glow externo (SVG com feGaussianBlur, sem imagens embutidas)
+    const glowSvg = `<svg width="${TW}" height="${TH}" xmlns="http://www.w3.org/2000/svg">
       <defs>
-        <linearGradient id="grad" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%"   stop-color="#000" stop-opacity="0"/>
-          <stop offset="55%"  stop-color="#000" stop-opacity="0.65"/>
-          <stop offset="100%" stop-color="#000" stop-opacity="0.92"/>
-        </linearGradient>
+        <filter id="g" x="-40%" y="-40%" width="180%" height="180%">
+          <feGaussianBlur stdDeviation="13"/>
+        </filter>
       </defs>
+      <rect x="${GLOW - 4}" y="${GLOW - 4}" width="${CW + 8}" height="${CH + 8}"
+            rx="${RX + 4}" fill="${cor}" opacity="0.5" filter="url(#g)"/>
+    </svg>`;
+    const glowBuf = await sharp(Buffer.from(glowSvg)).png().toBuffer();
 
-      <!-- gradiente inferior -->
-      <rect x="0" y="${H * 0.38}" width="${W}" height="${H * 0.62}" fill="url(#grad)"/>
-
-      <!-- borda da raridade -->
-      <rect x="0" y="0" width="${W}" height="${H}" rx="12" ry="12"
-            fill="none" stroke="${cor}" stroke-width="4" stroke-opacity="0.85"/>
-
-      <!-- badge raridade (esquerda) -->
-      <rect x="10" y="10" width="128" height="26" rx="6" fill="${cor}" fill-opacity="0.88"/>
-      <text x="20" y="28" font-family="Arial,sans-serif" font-size="13" font-weight="bold" fill="white">${labelRar}</text>
-
-      <!-- badge categoria (direita) -->
-      <rect x="${W - 110}" y="10" width="100" height="26" rx="6" fill="rgba(0,0,0,0.72)"/>
-      <text x="${W - 100}" y="28" font-family="Arial,sans-serif" font-size="12" fill="white">${labelCat}</text>
-
-      <!-- nome do personagem -->
-      <text x="16" y="${H - 84}" font-family="Arial,sans-serif" font-size="21" font-weight="bold" fill="white">${nome}</text>
-
-      <!-- franquia -->
-      <text x="16" y="${H - 60}" font-family="Arial,sans-serif" font-size="11" fill="rgba(255,255,255,0.65)" letter-spacing="1.5">${franquia}</text>
-
-      <!-- descrição -->
-      ${desc ? `<text x="16" y="${H - 38}" font-family="Arial,sans-serif" font-size="11" fill="rgba(255,255,255,0.55)">${desc}</text>` : ''}
-
-      <!-- pontos -->
-      <text x="${W - 14}" y="${H - 14}" font-family="Arial,sans-serif" font-size="15" font-weight="bold"
-            fill="${cor}" text-anchor="end">★ ${pts} pts</text>
-    </svg>`);
-
-    return await sharp(imgBuf)
-      .resize(W, H, { fit: 'cover', position: 'top' })
-      .composite([{ input: overlay, gravity: 'northwest' }])
+    // 7. Final: glow + card centralizado
+    return await sharp(glowBuf)
+      .composite([{ input: cardComBorda, top: GLOW, left: GLOW }])
       .png()
       .toBuffer();
 
@@ -133,6 +163,7 @@ async function gerarCardImagem(
     return null;
   }
 }
+
 
 export const data = new SlashCommandBuilder()
   .setName('spawn')
