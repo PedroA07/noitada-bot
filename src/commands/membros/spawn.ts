@@ -102,14 +102,11 @@ async function gerarCardImagem(
   rankingPos: number | null,
 ): Promise<Buffer | null> {
   try {
-    const isGif = imagemUrl.toLowerCase().endsWith('.gif');
-
     const res = await fetch(imagemUrl);
     if (!res.ok) return null;
     const imgBuf = Buffer.from(await res.arrayBuffer());
     if (imgBuf.length === 0) return null;
-
-    if (isGif) return imgBuf;
+    // GIF: sharp extrai o primeiro frame e aplica o card normalmente
 
     // Dimensões — mesma proporção do site
     const CW = 300;
@@ -133,8 +130,8 @@ async function gerarCardImagem(
     const generoSim = SIM_GENERO[genero] || '';
     const generoCor = COR_GENERO[genero] || '#9CA3AF';
 
-    // 1. Foto do personagem redimensionada
-    const charBuf = await sharp(imgBuf)
+    // 1. Foto do personagem redimensionada (animated: false extrai 1º frame de GIFs)
+    const charBuf = await sharp(imgBuf, { animated: false })
       .resize(CW, IMG_H, { fit: 'cover', position: 'top' })
       .png()
       .toBuffer();
@@ -146,9 +143,8 @@ async function gerarCardImagem(
       <text x="12" y="52" font-family="sans-serif" font-size="10" font-weight="bold" fill="${cor}" letter-spacing="1.2">${franquia}</text>
       ${desc ? `<text x="12" y="70" font-family="sans-serif" font-size="10" fill="rgba(255,255,255,0.38)">${desc}</text>` : ''}
       <line x1="10" y1="96" x2="${CW - 10}" y2="96" stroke="${cor}" stroke-opacity="0.15" stroke-width="1"/>
-      ${rankLabel ? `<text x="12" y="116" font-family="sans-serif" font-size="13" font-weight="bold" fill="${cor}">${rankLabel}</text>` : ''}
-      <text x="${rankLabel ? CW / 2 : 12}" y="116" font-family="sans-serif" font-size="10" fill="rgba(255,255,255,0.28)">&#9733; PTS</text>
-      <text x="${CW - 12}" y="116" font-family="sans-serif" font-size="14" font-weight="bold" fill="${cor}" text-anchor="end">${pts.toLocaleString('pt-BR')}</text>
+      <text x="12" y="116" font-family="sans-serif" font-size="13" font-weight="bold" fill="${cor}">&#9733; ${pts.toLocaleString('pt-BR')}</text>
+      ${rankLabel ? `<text x="${CW - 12}" y="116" font-family="sans-serif" font-size="13" font-weight="bold" fill="${cor}" text-anchor="end">${rankLabel}</text>` : ''}
     </svg>`;
     const botBuf = await sharp(Buffer.from(botSvg)).png().toBuffer();
 
@@ -160,9 +156,9 @@ async function gerarCardImagem(
       <!-- Badge categoria (direita) -->
       <rect x="${CW - 80}" y="8" width="72" height="26" rx="6" fill="rgba(8,8,8,0.78)"/>
       <text x="${CW - 44}" y="26" font-family="sans-serif" font-size="11" fill="rgba(255,255,255,0.85)" text-anchor="middle">${labelCat}</text>
-      <!-- Ícone de gênero (canto superior direito da imagem) -->
-      ${generoSim ? `<circle cx="${CW - 18}" cy="${IMG_H - 18}" r="14" fill="rgba(0,0,0,0.55)"/>
-      <text x="${CW - 18}" y="${IMG_H - 12}" font-family="sans-serif" font-size="14" fill="${generoCor}" text-anchor="middle">${generoSim}</text>` : ''}
+      <!-- Ícone de gênero (canto superior direito, abaixo dos badges) -->
+      ${generoSim ? `<circle cx="${CW - 18}" cy="50" r="14" fill="rgba(0,0,0,0.55)"/>
+      <text x="${CW - 18}" y="56" font-family="sans-serif" font-size="14" fill="${generoCor}" text-anchor="middle">${generoSim}</text>` : ''}
     </svg>`;
     const badgeBuf = await sharp(Buffer.from(badgeSvg)).png().toBuffer();
 
@@ -358,8 +354,7 @@ export const execute = async (interaction: ChatInputCommandInteraction) => {
 
     let msg;
     if (imageBuffer) {
-      const ext = carta.imagem_url?.toLowerCase().endsWith('.gif') ? 'gif' : 'png';
-      const attachment = new AttachmentBuilder(imageBuffer, { name: `carta-${carta.id}.${ext}` });
+      const attachment = new AttachmentBuilder(imageBuffer, { name: `carta-${carta.id}.png` });
       msg = await interaction.editReply({ content: textoSpawn, files: [attachment], components: [row] });
     } else {
       msg = await interaction.editReply({ content: textoSpawn, components: [row] });
