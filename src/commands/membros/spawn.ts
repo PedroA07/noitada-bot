@@ -42,8 +42,8 @@ const SIMBOLO_RARIDADE: Record<string, string> = {
 };
 
 const LABEL_CATEGORIA: Record<string, string> = {
-  anime: 'Anime', serie: 'Serie', filme: 'Filme', desenho: 'Desenho',
-  jogo: 'Jogo', musica: 'Musica', outro: 'Outro', hq: 'HQ',
+  anime: 'Anime', serie: '\u25B6 Serie', filme: '\u25A0 Filme', desenho: 'Desenho',
+  jogo: 'Jogo', musica: '\u266A M\u00fasica', outro: '\u25CB Outro', hq: 'HQ',
 };
 
 function calcPts(raridade: string, personagem: string, vinculo: string): number {
@@ -144,7 +144,7 @@ async function gerarCardImagem(
       ${desc ? `<text x="12" y="70" font-family="sans-serif" font-size="10" fill="rgba(255,255,255,0.38)">${desc}</text>` : ''}
       <line x1="10" y1="96" x2="${CW - 10}" y2="96" stroke="${cor}" stroke-opacity="0.15" stroke-width="1"/>
       <text x="12" y="116" font-family="sans-serif" font-size="13" font-weight="bold" fill="${cor}">&#9733; ${pts.toLocaleString('pt-BR')}</text>
-      ${rankLabel ? `<text x="${CW - 12}" y="116" font-family="sans-serif" font-size="13" font-weight="bold" fill="${cor}" text-anchor="end">${rankLabel}</text>` : ''}
+      ${rankLabel ? `<path d="M${CW-52},108 Q${CW-52},106 ${CW-50},106 L${CW-44},106 Q${CW-42},106 ${CW-42},108 L${CW-42},112 L${CW-47},117 L${CW-52},112 Z" fill="rgba(255,255,255,0.38)"/><text x="${CW-40}" y="116" font-family="sans-serif" font-size="12" font-weight="bold" fill="rgba(255,255,255,0.38)">${rankLabel}</text>` : ''}
     </svg>`;
     const botBuf = await sharp(Buffer.from(botSvg)).png().toBuffer();
 
