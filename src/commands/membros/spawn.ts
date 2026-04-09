@@ -22,15 +22,25 @@ const EMOJI_RARIDADE: Record<string, string> = {
   comum: '⚪', incomum: '🟢', raro: '🔵', epico: '🟣', lendario: '🟡',
 };
 
+// META por raridade — espelho exato do site
 const COR_RARIDADE: Record<string, string> = {
-  comum: '#9CA3AF', incomum: '#10B981', raro: '#3B82F6',
-  epico: '#8B5CF6', lendario: '#F59E0B',
+  comum: '#9CA3AF', incomum: '#22C55E', raro: '#3B82F6',
+  epico: '#A855F7', lendario: '#F59E0B',
 };
 
-// Fundo escuro com tint da raridade (igual ao site)
-const COR_BOTTOM: Record<string, string> = {
-  comum: '#111214', incomum: '#08150d', raro: '#080d18',
-  epico: '#0e0815', lendario: '#160f00',
+const GRAD_START: Record<string, string> = {
+  comum: '#374151', incomum: '#14532D', raro: '#1E3A8A',
+  epico: '#581C87', lendario: '#78350F',
+};
+
+const GRAD_END: Record<string, string> = {
+  comum: '#1F2937', incomum: '#052e16', raro: '#0f172a',
+  epico: '#1e0a3c', lendario: '#1c0a00',
+};
+
+const META_LABEL: Record<string, string> = {
+  comum: 'Comum', incomum: 'Incomum', raro: 'Raro',
+  epico: 'Épico', lendario: 'Lendário',
 };
 
 const PESO_PONTUACAO: Record<string, number> = {
@@ -42,8 +52,8 @@ const SIMBOLO_RARIDADE: Record<string, string> = {
 };
 
 const LABEL_CATEGORIA: Record<string, string> = {
-  anime: 'Anime', serie: '\u25B6 Serie', filme: '\u25A0 Filme', desenho: 'Desenho',
-  jogo: 'Jogo', musica: '\u266A M\u00fasica', outro: '\u25CB Outro', hq: 'HQ',
+  anime: 'Anime', serie: 'Série', filme: 'Filme',
+  desenho: 'Desenho', jogo: 'Jogo', musica: 'Música', hq: 'HQ', outro: 'Outro',
 };
 
 function calcPts(raridade: string, personagem: string, vinculo: string): number {
@@ -88,8 +98,7 @@ const SIM_GENERO: Record<string, string> = {
   masculino: '\u2642', feminino: '\u2640', outros: '\u26A7',
 };
 
-// Gera o card visual no estilo do site:
-// imagem do personagem (70%) + seção inferior com tint da raridade (30%) + glow externo
+// Gera o card visual idêntico ao PreviewCard do site (proporção 200px → 400px 2×)
 async function gerarCardImagem(
   imagemUrl: string,
   personagem: string,
@@ -106,93 +115,173 @@ async function gerarCardImagem(
     if (!res.ok) return null;
     const imgBuf = Buffer.from(await res.arrayBuffer());
     if (imgBuf.length === 0) return null;
-    // GIF: sharp extrai o primeiro frame e aplica o card normalmente
 
-    // Dimensões — mesma proporção do site
-    const CW = 300;
-    const IMG_H = 360;   // altura da foto do personagem
-    const BOT_H = 130;   // altura da seção inferior com texto
-    const CH = IMG_H + BOT_H;
-    const GLOW = 26;     // margem para o glow externo
-    const TW = CW + GLOW * 2;
-    const TH = CH + GLOW * 2;
-    const RX = 14;
+    // Dimensões — PreviewCard do site em 2× (200px → 400px)
+    const CW        = 400;
+    const TOPLINE_H = 4;    // linha brilhante no topo
+    const HDR_H     = 52;   // header: raridade + categoria
+    const IMG_H     = 490;  // área da foto (245 × 2)
+    const BODY_H    = 120;  // nome + vínculo + descrição
+    const FTR_H     = 54;   // footer com pontuação
+    const CH        = TOPLINE_H + HDR_H + IMG_H + BODY_H + FTR_H; // 720
+    const RX        = 40;
+    const GLOW      = 32;
+    const TW        = CW + GLOW * 2;
+    const TH        = CH + GLOW * 2;
 
-    const cor = COR_RARIDADE[raridade] || '#9CA3AF';
-    const botBg = COR_BOTTOM[raridade] || '#111214';
-    const sim = SIMBOLO_RARIDADE[raridade] || '●';
-    const labelRar = xmlEsc(`${sim} ${raridade.toUpperCase()}`);
+    const cor        = COR_RARIDADE[raridade] || '#9CA3AF';
+    const gradStart  = GRAD_START[raridade]   || '#374151';
+    const gradEnd    = GRAD_END[raridade]     || '#1F2937';
+    const isLend     = raridade === 'lendario';
+    const sim        = SIMBOLO_RARIDADE[raridade] || '●';
+    const generoSim  = SIM_GENERO[genero]  || '';
+    const generoCor  = COR_GENERO[genero]  || '#9CA3AF';
+    const isGif      = imagemUrl.toLowerCase().endsWith('.gif');
+
+    const labelRar = xmlEsc(`${sim} ${(META_LABEL[raridade] || raridade).toUpperCase()}`);
     const labelCat = xmlEsc(LABEL_CATEGORIA[categoria] || categoria);
-    const nome = xmlEsc(truncate(personagem, 22));
-    const franquia = xmlEsc(truncate(vinculo.toUpperCase(), 28));
-    const desc = descricao ? xmlEsc(truncate(descricao, 44)) : '';
-    const rankLabel = rankingPos ? xmlEsc(`#${rankingPos}`) : '';
-    const generoSim = SIM_GENERO[genero] || '';
-    const generoCor = COR_GENERO[genero] || '#9CA3AF';
+    const nome     = xmlEsc(truncate(personagem, 20));
+    const franquia = xmlEsc(truncate(vinculo.toUpperCase(), 26));
+    const desc     = descricao ? xmlEsc(truncate(descricao, 55)) : '';
 
-    // 1. Foto do personagem redimensionada (animated: false extrai 1º frame de GIFs)
+    // Posições Y
+    const yImgStart  = TOPLINE_H + HDR_H;                     // 56
+    const yBodyStart = yImgStart + IMG_H;                      // 546
+    const yFtrStart  = yBodyStart + BODY_H;                    // 666
+    const yHdrText   = TOPLINE_H + HDR_H / 2 + 7;             // ~33
+    const yName      = yBodyStart + 36;                        // 582
+    const yVinculo   = yName + 30;                             // 612
+    const yDescLine  = yVinculo + 14;
+    const yDescText  = yVinculo + 32;
+    const yFtrText   = yFtrStart + 35;
+
+    // 1. Foto do personagem (animated:false extrai 1º frame de GIFs)
     const charBuf = await sharp(imgBuf, { animated: false })
       .resize(CW, IMG_H, { fit: 'cover', position: 'top' })
       .png()
       .toBuffer();
 
-    // 2. Seção inferior — fundo com tint da raridade, franquia na cor da raridade
-    const botSvg = `<svg width="${CW}" height="${BOT_H}" xmlns="http://www.w3.org/2000/svg">
-      <rect width="${CW}" height="${BOT_H}" fill="${botBg}"/>
-      <text x="12" y="32" font-family="sans-serif" font-size="19" font-weight="bold" fill="white">${nome}</text>
-      <text x="12" y="52" font-family="sans-serif" font-size="10" font-weight="bold" fill="${cor}" letter-spacing="1.2">${franquia}</text>
-      ${desc ? `<text x="12" y="70" font-family="sans-serif" font-size="10" fill="rgba(255,255,255,0.38)">${desc}</text>` : ''}
-      <line x1="10" y1="96" x2="${CW - 10}" y2="96" stroke="${cor}" stroke-opacity="0.15" stroke-width="1"/>
-      <text x="12" y="116" font-family="sans-serif" font-size="13" font-weight="bold" fill="${cor}">&#9733; ${pts.toLocaleString('pt-BR')}</text>
-      ${rankLabel ? `<path d="M${CW-52},108 Q${CW-52},106 ${CW-50},106 L${CW-44},106 Q${CW-42},106 ${CW-42},108 L${CW-42},112 L${CW-47},117 L${CW-52},112 Z" fill="rgba(255,255,255,0.38)"/><text x="${CW-40}" y="116" font-family="sans-serif" font-size="12" font-weight="bold" fill="rgba(255,255,255,0.38)">${rankLabel}</text>` : ''}
-    </svg>`;
-    const botBuf = await sharp(Buffer.from(botSvg)).png().toBuffer();
+    // 2. Card base em SVG (sem imagem — será composta depois)
+    const cardSvg = `<svg width="${CW}" height="${CH}" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <!-- Gradiente de fundo por raridade (170deg ≈ quase vertical) -->
+        <linearGradient id="bg" x1="0.52" y1="0" x2="0.48" y2="1">
+          <stop offset="0%"   stop-color="${gradStart}"/>
+          <stop offset="100%" stop-color="${gradEnd}"/>
+        </linearGradient>
+        <!-- Linha brilhante no topo -->
+        <linearGradient id="topline" x1="0" y1="0" x2="1" y2="0">
+          <stop offset="0%"   stop-color="${cor}" stop-opacity="0"/>
+          <stop offset="50%"  stop-color="${cor}" stop-opacity="1"/>
+          <stop offset="100%" stop-color="${cor}" stop-opacity="0"/>
+        </linearGradient>
+        ${isLend ? `<!-- Shimmer lendário sobre a imagem -->
+        <linearGradient id="shimmer" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0%"   stop-color="${cor}" stop-opacity="0.09"/>
+          <stop offset="55%"  stop-color="${cor}" stop-opacity="0"/>
+          <stop offset="100%" stop-color="${cor}" stop-opacity="0.09"/>
+        </linearGradient>` : ''}
+      </defs>
 
-    // 3. Badges no topo + ícone de gênero no canto superior direito
-    const badgeSvg = `<svg width="${CW}" height="${IMG_H}" xmlns="http://www.w3.org/2000/svg">
-      <!-- Badge raridade (esquerda) -->
-      <rect x="8" y="8" width="116" height="26" rx="6" fill="${cor}" fill-opacity="0.92"/>
-      <text x="18" y="26" font-family="sans-serif" font-size="12" font-weight="bold" fill="white">${labelRar}</text>
-      <!-- Badge categoria (direita) -->
-      <rect x="${CW - 80}" y="8" width="72" height="26" rx="6" fill="rgba(8,8,8,0.78)"/>
-      <text x="${CW - 44}" y="26" font-family="sans-serif" font-size="11" fill="rgba(255,255,255,0.85)" text-anchor="middle">${labelCat}</text>
-      <!-- Ícone de gênero (canto superior direito, abaixo dos badges) -->
-      ${generoSim ? `<circle cx="${CW - 18}" cy="50" r="14" fill="rgba(0,0,0,0.55)"/>
-      <text x="${CW - 18}" y="56" font-family="sans-serif" font-size="14" fill="${generoCor}" text-anchor="middle">${generoSim}</text>` : ''}
-    </svg>`;
-    const badgeBuf = await sharp(Buffer.from(badgeSvg)).png().toBuffer();
+      <!-- Fundo gradiente -->
+      <rect width="${CW}" height="${CH}" fill="url(#bg)"/>
 
-    // 4. Monta o card (foto + seção inferior + badges+gênero)
-    const cardBuf = await sharp({
-      create: { width: CW, height: CH, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0 } },
-    })
-      .composite([
-        { input: charBuf, top: 0, left: 0 },
-        { input: botBuf, top: IMG_H, left: 0 },
-        { input: badgeBuf, top: 0, left: 0 },  // cobre toda área da foto
-      ])
+      <!-- Linha brilhante topo -->
+      <rect x="0" y="0" width="${CW}" height="${TOPLINE_H}" fill="url(#topline)"/>
+
+      <!-- ── HEADER: raridade (esquerda) + categoria (direita) ── -->
+      <text x="24" y="${yHdrText}"
+            font-family="sans-serif" font-size="18" font-weight="900"
+            fill="${cor}" letter-spacing="2">${labelRar}</text>
+      <text x="${CW - 24}" y="${yHdrText}"
+            font-family="sans-serif" font-size="18"
+            fill="#6B7280" text-anchor="end">${labelCat}</text>
+      <line x1="0" y1="${yImgStart}" x2="${CW}" y2="${yImgStart}"
+            stroke="${cor}" stroke-opacity="0.13" stroke-width="1"/>
+
+      <!-- ── ÁREA DA IMAGEM (placeholder preto — foto composta depois) ── -->
+      <rect x="0" y="${yImgStart}" width="${CW}" height="${IMG_H}" fill="#000"/>
+      ${isLend ? `<rect x="0" y="${yImgStart}" width="${CW}" height="${IMG_H}" fill="url(#shimmer)"/>` : ''}
+
+      <!-- ── BODY: nome + vínculo + descrição ── -->
+      <line x1="0" y1="${yBodyStart}" x2="${CW}" y2="${yBodyStart}"
+            stroke="${cor}" stroke-opacity="0.13" stroke-width="1"/>
+      <!-- Nome -->
+      <text x="24" y="${yName}"
+            font-family="sans-serif" font-size="26" font-weight="900"
+            fill="white">${nome}</text>
+      <!-- Vínculo -->
+      <text x="24" y="${yVinculo}"
+            font-family="sans-serif" font-size="18" font-weight="700"
+            fill="${cor}" letter-spacing="2">${franquia}</text>
+      ${desc ? `<line x1="24" y1="${yDescLine}" x2="${CW - 24}" y2="${yDescLine}"
+                      stroke="${cor}" stroke-opacity="0.13" stroke-width="1"/>
+               <text x="24" y="${yDescText}"
+                     font-family="sans-serif" font-size="16"
+                     fill="#6B7280">${desc}</text>` : ''}
+
+      <!-- ── FOOTER: ★ PTS (esquerda) + valor (direita) ── -->
+      <rect x="0" y="${yFtrStart}" width="${CW}" height="${FTR_H}"
+            fill="#000" fill-opacity="0.38"/>
+      <line x1="0" y1="${yFtrStart}" x2="${CW}" y2="${yFtrStart}"
+            stroke="${cor}" stroke-opacity="0.13" stroke-width="1"/>
+      <text x="24" y="${yFtrText}"
+            font-family="sans-serif" font-size="18"
+            fill="#4B5563">&#9733; PTS</text>
+      <text x="${CW - 24}" y="${yFtrText}"
+            font-family="sans-serif" font-size="24" font-weight="900"
+            fill="${cor}" text-anchor="end">${pts.toLocaleString('pt-BR')}</text>
+    </svg>`;
+
+    const cardBaseBuf = await sharp(Buffer.from(cardSvg)).png().toBuffer();
+
+    // 3. Composita a foto na área da imagem
+    const cardWithImg = await sharp(cardBaseBuf)
+      .composite([{ input: charBuf, top: yImgStart, left: 0 }])
       .png()
       .toBuffer();
 
-    // 5. Borda colorida sobre o card
-    const bordaSvg = `<svg width="${CW}" height="${CH}" xmlns="http://www.w3.org/2000/svg">
-      <rect x="1" y="1" width="${CW - 2}" height="${CH - 2}" rx="${RX}" ry="${RX}"
-            fill="none" stroke="${cor}" stroke-width="3"/>
+    // 4. Overlay: badge de gênero (canto sup-dir da imagem) + badge GIF (canto sup-esq)
+    const badgeSvg = `<svg width="${CW}" height="${CH}" xmlns="http://www.w3.org/2000/svg">
+      ${generoSim ? `<rect x="${CW - 50}" y="${yImgStart + 14}" width="36" height="36"
+              rx="7" fill="#000" fill-opacity="0.65"/>
+        <text x="${CW - 32}" y="${yImgStart + 38}"
+              font-family="sans-serif" font-size="20"
+              fill="${generoCor}" text-anchor="middle">${generoSim}</text>` : ''}
+      ${isGif ? `<rect x="14" y="${yImgStart + 14}" width="44" height="24"
+              rx="5" fill="#A855F7" fill-opacity="0.85"/>
+        <text x="36" y="${yImgStart + 30}"
+              font-family="sans-serif" font-size="13" font-weight="900"
+              fill="white" text-anchor="middle" letter-spacing="1">GIF</text>` : ''}
     </svg>`;
-    const cardComBorda = await sharp(cardBuf)
+
+    const cardWithBadges = await sharp(cardWithImg)
+      .composite([{ input: Buffer.from(badgeSvg), top: 0, left: 0 }])
+      .png()
+      .toBuffer();
+
+    // 5. Borda colorida (2px, stroke-opacity 0.33 — igual ao site: border: `2px solid ${m.hex}55`)
+    const bordaSvg = `<svg width="${CW}" height="${CH}" xmlns="http://www.w3.org/2000/svg">
+      <rect x="1" y="1" width="${CW - 2}" height="${CH - 2}"
+            rx="${RX}" ry="${RX}" fill="none"
+            stroke="${cor}" stroke-opacity="0.33" stroke-width="2"/>
+    </svg>`;
+    const cardComBorda = await sharp(cardWithBadges)
       .composite([{ input: Buffer.from(bordaSvg), top: 0, left: 0 }])
       .png()
       .toBuffer();
 
-    // 6. Glow externo (SVG com feGaussianBlur, sem imagens embutidas)
+    // 6. Glow externo (lendário = mais intenso, igual ao boxShadow do site)
+    const glowOpacity = isLend ? 0.75 : 0.5;
+    const glowBlur    = isLend ? 18   : 13;
     const glowSvg = `<svg width="${TW}" height="${TH}" xmlns="http://www.w3.org/2000/svg">
       <defs>
-        <filter id="g" x="-40%" y="-40%" width="180%" height="180%">
-          <feGaussianBlur stdDeviation="13"/>
+        <filter id="g" x="-50%" y="-50%" width="200%" height="200%">
+          <feGaussianBlur stdDeviation="${glowBlur}"/>
         </filter>
       </defs>
       <rect x="${GLOW - 4}" y="${GLOW - 4}" width="${CW + 8}" height="${CH + 8}"
-            rx="${RX + 4}" fill="${cor}" opacity="0.5" filter="url(#g)"/>
+            rx="${RX + 4}" fill="${cor}" opacity="${glowOpacity}" filter="url(#g)"/>
     </svg>`;
     const glowBuf = await sharp(Buffer.from(glowSvg)).png().toBuffer();
 
