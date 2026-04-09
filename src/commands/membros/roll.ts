@@ -113,6 +113,7 @@ export const data = new SlashCommandBuilder()
         { name: '🖼️ Desenho', value: 'desenho' },
         { name: '🎮 Jogo',    value: 'jogo'    },
         { name: '🎵 Música',  value: 'musica'  },
+        { name: '📚 HQ',      value: 'hq'      },
         { name: '🌀 Outro',   value: 'outro'   },
       )
   );
