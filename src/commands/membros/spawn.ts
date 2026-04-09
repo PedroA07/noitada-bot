@@ -1,26 +1,56 @@
 import {
   SlashCommandBuilder,
   ChatInputCommandInteraction,
-  EmbedBuilder,
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
   MessageFlags,
+  AttachmentBuilder,
 } from 'discord.js';
 import { supabase } from '../../lib/supabase';
 
-const COR_RARIDADE: Record<string, string> = {
-  comum: '#9CA3AF', incomum: '#10B981', raro: '#3B82F6',
-  epico: '#8B5CF6', lendario: '#F59E0B',
+const PESOS_SPAWN: Record<string, number> = {
+  comum: 50, incomum: 25, raro: 15, epico: 7, lendario: 3,
+};
+
+const PONTOS_BASE: Record<string, number> = {
+  comum: 1, incomum: 10, raro: 50, epico: 200, lendario: 1000,
 };
 
 const EMOJI_RARIDADE: Record<string, string> = {
   comum: '⚪', incomum: '🟢', raro: '🔵', epico: '🟣', lendario: '🟡',
 };
 
-const EMOJI_GENERO: Record<string, string> = {
-  masculino: '♂️', feminino: '♀️', outros: '⚧️',
-};
+function calcPts(raridade: string, personagem: string, vinculo: string): number {
+  const base = PONTOS_BASE[raridade] ?? 1;
+  let h = 0;
+  const s = (personagem + vinculo).toLowerCase();
+  for (let i = 0; i < s.length; i++) { h = ((h << 5) - h) + s.charCodeAt(i); h |= 0; }
+  return base + (Math.abs(h) % 50);
+}
+
+const SITE_URL = (process.env.SITE_URL || 'https://www.noitadaserver.com.br').replace(/\/$/, '');
+
+async function buscarImagemCard(cartaId: string, imagemUrl: string | null): Promise<Buffer | null> {
+  if (!imagemUrl) return null;
+  try {
+    if (imagemUrl.toLowerCase().endsWith('.gif')) {
+      const res = await fetch(imagemUrl);
+      if (!res.ok) return null;
+      return Buffer.from(await res.arrayBuffer());
+    }
+    const urlCard = `${SITE_URL}/api/cartas/imagem?id=${cartaId}`;
+    const res = await fetch(urlCard);
+    if (!res.ok) {
+      console.warn(`[spawn] API imagem retornou ${res.status} para carta ${cartaId}`);
+      return null;
+    }
+    return Buffer.from(await res.arrayBuffer());
+  } catch (err: any) {
+    console.error('[spawn] erro ao buscar imagem:', err?.message);
+    return null;
+  }
+}
 
 export const data = new SlashCommandBuilder()
   .setName('spawn')
@@ -55,7 +85,6 @@ async function verificarCaptura(
   guildId: string,
   cargoIds: string[]
 ): Promise<{ pode: boolean; motivo?: string; capturasDiarias: number }> {
-  // Busca config do cargo
   const { data: configs } = await supabase
     .from('configuracoes_roll')
     .select('capturas_por_dia, cooldown_captura_segundos')
@@ -104,10 +133,6 @@ async function verificarCaptura(
 }
 
 async function sortearCarta(categoria?: string | null, genero?: string | null) {
-  const pesos: Record<string, number> = {
-    comum: 50, incomum: 25, raro: 15, epico: 7, lendario: 3,
-  };
-
   let query = supabase
     .from('cartas')
     .select('id, nome, personagem, vinculo, categoria, raridade, imagem_url, descricao, genero')
@@ -121,7 +146,7 @@ async function sortearCarta(categoria?: string | null, genero?: string | null) {
 
   const pool: typeof cartas = [];
   for (const carta of cartas) {
-    const peso = pesos[carta.raridade] || 10;
+    const peso = PESOS_SPAWN[carta.raridade] || 10;
     for (let i = 0; i < peso; i++) pool.push(carta);
   }
 
@@ -158,32 +183,25 @@ export const execute = async (interaction: ChatInputCommandInteraction) => {
       return;
     }
 
-    const embed = new EmbedBuilder()
-      .setColor(COR_RARIDADE[carta.raridade] as any)
-      .setTitle(`${EMOJI_RARIDADE[carta.raridade]} ${carta.personagem}`)
-      .setDescription(
-        [
-          `📖 **Vínculo:** ${carta.vinculo}`,
-          `🏷️ **Categoria:** ${carta.categoria}`,
-          `${EMOJI_GENERO[carta.genero]} **Gênero:** ${carta.genero.charAt(0).toUpperCase() + carta.genero.slice(1)}`,
-          `✨ **Raridade:** ${carta.raridade.charAt(0).toUpperCase() + carta.raridade.slice(1)}`,
-          carta.descricao ? `\n${carta.descricao}` : '',
-          '\n🖐️ **Clique em Capturar para pegar essa carta!**',
-        ].filter(Boolean).join('\n')
-      )
-      .setFooter({
-        text: `${interaction.user.username} • Você tem ${(await supabase
-          .from('capturas_diarias')
-          .select('total_capturas, rolls_extras')
-          .eq('discord_id', userId)
-          .eq('guild_id', guildId)
-          .gte('data_reset', new Date().toDateString())
-          .maybeSingle()).data?.total_capturas || 0}/${verificacao.capturasDiarias} capturas hoje`,
-        iconURL: interaction.user.displayAvatarURL(),
-      })
-      .setTimestamp();
+    // Busca capturas atuais para o footer
+    const { data: capturaDiaria } = await supabase
+      .from('capturas_diarias')
+      .select('total_capturas')
+      .eq('discord_id', userId)
+      .eq('guild_id', guildId)
+      .gte('data_reset', new Date().toDateString())
+      .maybeSingle();
+    const totalCapturas = capturaDiaria?.total_capturas || 0;
 
-    if (carta.imagem_url) embed.setImage(carta.imagem_url);
+    const pts = calcPts(carta.raridade, carta.personagem, carta.vinculo);
+    const emoji = EMOJI_RARIDADE[carta.raridade] ?? '❓';
+
+    const textoSpawn = [
+      `${emoji} **${carta.personagem}** — ${carta.vinculo}`,
+      `✨ ${carta.raridade.charAt(0).toUpperCase() + carta.raridade.slice(1)} • ⭐ ${pts.toLocaleString('pt-BR')} pts`,
+      `\n🖐️ **Clique em Capturar para pegar essa carta!**`,
+      `*${interaction.user.username} • Você tem ${totalCapturas}/${verificacao.capturasDiarias} capturas hoje*`,
+    ].join('\n');
 
     const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
       new ButtonBuilder()
@@ -196,12 +214,18 @@ export const execute = async (interaction: ChatInputCommandInteraction) => {
         .setStyle(ButtonStyle.Secondary),
     );
 
-    const msg = await interaction.editReply({ embeds: [embed], components: [row] });
+    const imageBuffer = await buscarImagemCard(carta.id, carta.imagem_url);
 
-    // Collector — 60s para capturar
-    const collector = msg.createMessageComponentCollector({
-      time: 60_000,
-    });
+    let msg;
+    if (imageBuffer) {
+      const ext = carta.imagem_url?.toLowerCase().endsWith('.gif') ? 'gif' : 'png';
+      const attachment = new AttachmentBuilder(imageBuffer, { name: `carta-${carta.id}.${ext}` });
+      msg = await interaction.editReply({ content: textoSpawn, files: [attachment], components: [row] });
+    } else {
+      msg = await interaction.editReply({ content: textoSpawn, components: [row] });
+    }
+
+    const collector = msg.createMessageComponentCollector({ time: 60_000 });
 
     collector.on('collect', async (btn) => {
       const [acao, cartaId, donoId] = btn.customId.split('_');
@@ -214,11 +238,7 @@ export const execute = async (interaction: ChatInputCommandInteraction) => {
       await btn.deferUpdate();
 
       if (acao === 'ignorar') {
-        await interaction.editReply({
-          content: '❌ Carta ignorada.',
-          embeds: [],
-          components: [],
-        });
+        await interaction.editReply({ content: '❌ Carta ignorada.', components: [] });
         collector.stop();
         return;
       }
@@ -242,10 +262,9 @@ export const execute = async (interaction: ChatInputCommandInteraction) => {
           .insert({ discord_id: userId, carta_id: cartaId });
       }
 
-      // Registra captura diária
       const hoje = new Date().toDateString();
       const agora = new Date().toISOString();
-      const { data: capturaDiaria } = await supabase
+      const { data: capturaDiariaAtual } = await supabase
         .from('capturas_diarias')
         .select('*')
         .eq('discord_id', userId)
@@ -253,27 +272,26 @@ export const execute = async (interaction: ChatInputCommandInteraction) => {
         .gte('data_reset', hoje)
         .maybeSingle();
 
-      if (capturaDiaria) {
+      if (capturaDiariaAtual) {
         await supabase
           .from('capturas_diarias')
-          .update({ total_capturas: capturaDiaria.total_capturas + 1, ultima_captura: agora })
-          .eq('id', capturaDiaria.id);
+          .update({ total_capturas: capturaDiariaAtual.total_capturas + 1, ultima_captura: agora })
+          .eq('id', capturaDiariaAtual.id);
       } else {
         await supabase
           .from('capturas_diarias')
           .insert({ discord_id: userId, guild_id: guildId, data_reset: agora, total_capturas: 1, ultima_captura: agora });
       }
 
-      const embedCapturada = EmbedBuilder.from(embed)
-        .setTitle(`✅ ${carta.personagem} capturada!`)
-        .setDescription(
-          jaTemCarta
-            ? `🔄 Você já tinha essa carta! Agora tem **${jaTemCarta.quantidade + 1}x**.`
-            : '🆕 **Nova carta adicionada à sua coleção!**'
-        )
-        .setColor('#22c55e');
+      const textoCaptura = [
+        `${emoji} **${carta.personagem}** — ${carta.vinculo}`,
+        `✨ ${carta.raridade.charAt(0).toUpperCase() + carta.raridade.slice(1)} • ⭐ ${pts.toLocaleString('pt-BR')} pts`,
+        jaTemCarta
+          ? `\n🔄 Duplicata! Você agora tem **${jaTemCarta.quantidade + 1}x**.`
+          : `\n🆕 **Nova carta adicionada à sua coleção!**`,
+      ].join('\n');
 
-      await interaction.editReply({ embeds: [embedCapturada], components: [] });
+      await interaction.editReply({ content: textoCaptura, components: [] });
       collector.stop();
     });
 
@@ -281,7 +299,6 @@ export const execute = async (interaction: ChatInputCommandInteraction) => {
       if (reason === 'time') {
         await interaction.editReply({
           content: '⏰ Tempo esgotado! A carta fugiu...',
-          embeds: [],
           components: [],
         }).catch(() => {});
       }
