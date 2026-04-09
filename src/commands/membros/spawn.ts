@@ -176,19 +176,9 @@ export const execute = async (interaction: ChatInputCommandInteraction) => {
   const categoria = interaction.options.getString('categoria');
   const genero = interaction.options.getString('genero');
 
-  const member = interaction.guild?.members.cache.get(userId)
-    || await interaction.guild?.members.fetch(userId).catch(() => null);
-  const cargoIds = member ? [...member.roles.cache.keys()] : [];
-
   await interaction.deferReply();
 
   try {
-    const verificacao = await verificarCaptura(userId, guildId, cargoIds);
-    if (!verificacao.pode) {
-      await interaction.editReply({ content: verificacao.motivo });
-      return;
-    }
-
     const carta = await sortearCarta(categoria, genero);
     if (!carta) {
       const filtro = [categoria, genero].filter(Boolean).join(' + ');
