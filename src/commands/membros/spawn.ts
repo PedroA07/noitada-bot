@@ -81,6 +81,13 @@ async function buscarRankingUsuario(userId: string): Promise<number | null> {
   return [...map.values()].filter(p => p > meusPts).length + 1;
 }
 
+const COR_GENERO: Record<string, string> = {
+  masculino: '#60A5FA', feminino: '#F472B6', outros: '#9CA3AF',
+};
+const SIM_GENERO: Record<string, string> = {
+  masculino: '\u2642', feminino: '\u2640', outros: '\u26A7',
+};
+
 // Gera o card visual no estilo do site:
 // imagem do personagem (70%) + seção inferior com tint da raridade (30%) + glow externo
 async function gerarCardImagem(
@@ -89,6 +96,7 @@ async function gerarCardImagem(
   vinculo: string,
   raridade: string,
   categoria: string,
+  genero: string,
   descricao: string | null,
   pts: number,
   rankingPos: number | null,
@@ -122,6 +130,8 @@ async function gerarCardImagem(
     const franquia = xmlEsc(truncate(vinculo.toUpperCase(), 28));
     const desc = descricao ? xmlEsc(truncate(descricao, 44)) : '';
     const rankLabel = rankingPos ? xmlEsc(`#${rankingPos}`) : '';
+    const generoSim = SIM_GENERO[genero] || '';
+    const generoCor = COR_GENERO[genero] || '#9CA3AF';
 
     // 1. Foto do personagem redimensionada
     const charBuf = await sharp(imgBuf)
@@ -142,23 +152,28 @@ async function gerarCardImagem(
     </svg>`;
     const botBuf = await sharp(Buffer.from(botSvg)).png().toBuffer();
 
-    // 3. Badges sobrepostos no topo da foto
-    const badgeSvg = `<svg width="${CW}" height="46" xmlns="http://www.w3.org/2000/svg">
+    // 3. Badges no topo + ícone de gênero no canto superior direito
+    const badgeSvg = `<svg width="${CW}" height="${IMG_H}" xmlns="http://www.w3.org/2000/svg">
+      <!-- Badge raridade (esquerda) -->
       <rect x="8" y="8" width="116" height="26" rx="6" fill="${cor}" fill-opacity="0.92"/>
       <text x="18" y="26" font-family="sans-serif" font-size="12" font-weight="bold" fill="white">${labelRar}</text>
-      <rect x="${CW - 92}" y="8" width="84" height="26" rx="6" fill="rgba(8,8,8,0.80)"/>
-      <text x="${CW - 82}" y="26" font-family="sans-serif" font-size="11" fill="rgba(255,255,255,0.85)">${labelCat}</text>
+      <!-- Badge categoria (direita) -->
+      <rect x="${CW - 80}" y="8" width="72" height="26" rx="6" fill="rgba(8,8,8,0.78)"/>
+      <text x="${CW - 44}" y="26" font-family="sans-serif" font-size="11" fill="rgba(255,255,255,0.85)" text-anchor="middle">${labelCat}</text>
+      <!-- Ícone de gênero (canto superior direito da imagem) -->
+      ${generoSim ? `<circle cx="${CW - 18}" cy="${IMG_H - 18}" r="14" fill="rgba(0,0,0,0.55)"/>
+      <text x="${CW - 18}" y="${IMG_H - 12}" font-family="sans-serif" font-size="14" fill="${generoCor}" text-anchor="middle">${generoSim}</text>` : ''}
     </svg>`;
     const badgeBuf = await sharp(Buffer.from(badgeSvg)).png().toBuffer();
 
-    // 4. Monta o card (foto + seção inferior + badges)
+    // 4. Monta o card (foto + seção inferior + badges+gênero)
     const cardBuf = await sharp({
       create: { width: CW, height: CH, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0 } },
     })
       .composite([
         { input: charBuf, top: 0, left: 0 },
         { input: botBuf, top: IMG_H, left: 0 },
-        { input: badgeBuf, top: 0, left: 0 },
+        { input: badgeBuf, top: 0, left: 0 },  // cobre toda área da foto
       ])
       .png()
       .toBuffer();
@@ -324,7 +339,7 @@ export const execute = async (interaction: ChatInputCommandInteraction) => {
 
     const rankingPos = await buscarRankingUsuario(userId);
     const imageBuffer = carta.imagem_url
-      ? await gerarCardImagem(carta.imagem_url, carta.personagem, carta.vinculo, carta.raridade, carta.categoria, carta.descricao ?? null, pts, rankingPos)
+      ? await gerarCardImagem(carta.imagem_url, carta.personagem, carta.vinculo, carta.raridade, carta.categoria, carta.genero ?? 'outros', carta.descricao ?? null, pts, rankingPos)
       : null;
 
     const rankLabel = rankingPos ? ` • 🏅 **#${rankingPos}** no ranking` : '';
