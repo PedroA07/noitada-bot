@@ -254,9 +254,15 @@ async function gerarCardImagem(
 
       const gifMeta = await sharp(imgBuf, { animated: true }).metadata();
       const numFrames = Math.min(gifMeta.pages ?? 1, 20); // máx 20 frames
-      const frameDelays = Array.isArray(gifMeta.delay)
-        ? gifMeta.delay.slice(0, numFrames)
-        : new Array(numFrames).fill(100);
+
+      // Normaliza delays por frame: respeita tempo variável de cada frame,
+      // preenche frames sem delay com o último valor conhecido (ou 100ms),
+      // e garante mínimo de 20ms para evitar problemas no ffmpeg.
+      const rawDelays = Array.isArray(gifMeta.delay) ? gifMeta.delay : [];
+      const frameDelays = Array.from({ length: numFrames }, (_, i) => {
+        const d = rawDelays[i] ?? rawDelays[rawDelays.length - 1] ?? 100;
+        return Math.max(d, 20); // mínimo 20ms
+      });
 
       const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'noitada-card-'));
       try {
