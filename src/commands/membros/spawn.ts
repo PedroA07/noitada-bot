@@ -8,6 +8,11 @@ import {
   AttachmentBuilder,
 } from 'discord.js';
 import sharp from 'sharp';
+import { execSync } from 'child_process';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
+import ffmpegStatic from 'ffmpeg-static';
 import { supabase } from '../../lib/supabase';
 
 const PESOS_SPAWN: Record<string, number> = {
@@ -176,109 +181,7 @@ async function gerarCardImagem(
               fill="white" text-anchor="middle" letter-spacing="1">GIF</text>` : ''}
     </svg>`;
 
-    if (isGif) {
-      // ── FLUXO GIF ANIMADO ──────────────────────────────────────────────────
-      // Regra do sharp: quando a BASE é animada, composites estáticos são
-      // aplicados em cada frame automaticamente → output animado garantido.
-      //
-      // O GIF é redimensionado para CW × CH (tamanho total do card) e serve
-      // como base. O overlay SVG cobre header/footer com fundos sólidos e
-      // deixa a área da imagem transparente para o GIF aparecer.
-
-      // 1. GIF redimensionado para o tamanho total do card (BASE ANIMADA)
-      const gifBase = await sharp(imgBuf, { animated: true })
-        .resize(CW, CH, { fit: 'cover', position: 'top' })
-        .webp({ loop: 0 })
-        .toBuffer();
-
-      // 2. Overlay SVG: header/footer com fundo sólido, área da imagem transparente.
-      //    clipPath no próprio SVG para cantos arredondados (sem blend:dest-in).
-      //    gradientUnits="userSpaceOnUse" para gradiente correto em rects parciais.
-      const gifOverlaySvg = `<svg width="${CW}" height="${CH}" xmlns="http://www.w3.org/2000/svg">
-        <defs>
-          <clipPath id="cc">
-            <rect width="${CW}" height="${CH}" rx="${RX}" ry="${RX}"/>
-          </clipPath>
-          <linearGradient id="bg" x1="0" y1="0" x2="0" y2="${CH}" gradientUnits="userSpaceOnUse">
-            <stop offset="0%"   stop-color="${gradStart}"/>
-            <stop offset="100%" stop-color="${gradEnd}"/>
-          </linearGradient>
-          <linearGradient id="topline" x1="0" y1="0" x2="${CW}" y2="0" gradientUnits="userSpaceOnUse">
-            <stop offset="0%"   stop-color="${cor}" stop-opacity="0"/>
-            <stop offset="50%"  stop-color="${cor}" stop-opacity="1"/>
-            <stop offset="100%" stop-color="${cor}" stop-opacity="0"/>
-          </linearGradient>
-          ${isLend ? `<linearGradient id="shimmer" x1="0" y1="${yImgStart}" x2="${CW}" y2="${yBodyStart}" gradientUnits="userSpaceOnUse">
-            <stop offset="0%"   stop-color="${cor}" stop-opacity="0.09"/>
-            <stop offset="55%"  stop-color="${cor}" stop-opacity="0"/>
-            <stop offset="100%" stop-color="${cor}" stop-opacity="0.09"/>
-          </linearGradient>` : ''}
-        </defs>
-        <g clip-path="url(#cc)">
-          <!-- Fundo header (cobre topo do GIF) -->
-          <rect x="0" y="0" width="${CW}" height="${yImgStart}" fill="url(#bg)"/>
-          <rect x="0" y="0" width="${CW}" height="${TOPLINE_H}" fill="url(#topline)"/>
-          <text x="24" y="${yHdrText}"
-                font-family="sans-serif" font-size="18" font-weight="900"
-                fill="${cor}" letter-spacing="2">${labelRar}</text>
-          <text x="${CW - 24}" y="${yHdrText}"
-                font-family="sans-serif" font-size="18"
-                fill="#6B7280" text-anchor="end">${labelCat}</text>
-          <line x1="0" y1="${yImgStart}" x2="${CW}" y2="${yImgStart}"
-                stroke="${cor}" stroke-opacity="0.13" stroke-width="1"/>
-          <!-- Área da imagem: TRANSPARENTE — GIF animado aparece aqui -->
-          ${isLend ? `<rect x="0" y="${yImgStart}" width="${CW}" height="${IMG_H}" fill="url(#shimmer)"/>` : ''}
-          <!-- Fundo body + footer (cobre rodapé do GIF) -->
-          <rect x="0" y="${yBodyStart}" width="${CW}" height="${BODY_H + FTR_H}" fill="url(#bg)"/>
-          <line x1="0" y1="${yBodyStart}" x2="${CW}" y2="${yBodyStart}"
-                stroke="${cor}" stroke-opacity="0.13" stroke-width="1"/>
-          <text x="24" y="${yName}"
-                font-family="sans-serif" font-size="26" font-weight="900"
-                fill="white">${nome}</text>
-          <text x="24" y="${yVinculo}"
-                font-family="sans-serif" font-size="18" font-weight="700"
-                fill="${cor}" letter-spacing="2">${franquia}</text>
-          ${desc ? `<line x1="24" y1="${yDescLine}" x2="${CW - 24}" y2="${yDescLine}"
-                          stroke="${cor}" stroke-opacity="0.13" stroke-width="1"/>
-                   <text x="24" y="${yDescText}"
-                         font-family="sans-serif" font-size="16"
-                         fill="#6B7280">${desc}</text>` : ''}
-          <rect x="0" y="${yFtrStart}" width="${CW}" height="${FTR_H}"
-                fill="#000" fill-opacity="0.38"/>
-          <line x1="0" y1="${yFtrStart}" x2="${CW}" y2="${yFtrStart}"
-                stroke="${cor}" stroke-opacity="0.13" stroke-width="1"/>
-          <text x="24" y="${yFtrText}"
-                font-family="sans-serif" font-size="18"
-                fill="#4B5563">&#9733; PTS</text>
-          <text x="${CW - 24}" y="${yFtrText}"
-                font-family="sans-serif" font-size="24" font-weight="900"
-                fill="${cor}" text-anchor="end">${pts.toLocaleString('pt-BR')}</text>
-          <rect x="1" y="1" width="${CW - 2}" height="${CH - 2}"
-                rx="${RX}" ry="${RX}" fill="none"
-                stroke="${cor}" stroke-opacity="0.33" stroke-width="2"/>
-        </g>
-      </svg>`;
-
-      // 3. Compor overlay + badges sobre cada frame do GIF animado
-      const buffer = await sharp(gifBase, { animated: true })
-        .composite([
-          { input: Buffer.from(gifOverlaySvg), top: 0, left: 0 },
-          { input: Buffer.from(badgeSvg), top: 0, left: 0 },
-        ])
-        .webp({ loop: 0 })
-        .toBuffer();
-
-      return { buffer, ext: 'webp' };
-    }
-
-    // ── FLUXO IMAGEM ESTÁTICA ──────────────────────────────────────────────────
-    // 1. Extrair 1º frame
-    const charBuf = await sharp(imgBuf, { animated: false })
-      .resize(CW, IMG_H, { fit: 'cover', position: 'top' })
-      .png()
-      .toBuffer();
-
-    // 2. Card base em SVG (sem imagem — será composta depois)
+    // Card base SVG (compartilhado entre fluxo GIF e estático)
     const cardSvg = `<svg width="${CW}" height="${CH}" xmlns="http://www.w3.org/2000/svg">
       <defs>
         <linearGradient id="bg" x1="0.52" y1="0" x2="0.48" y2="1">
@@ -296,10 +199,8 @@ async function gerarCardImagem(
           <stop offset="100%" stop-color="${cor}" stop-opacity="0.09"/>
         </linearGradient>` : ''}
       </defs>
-
       <rect width="${CW}" height="${CH}" fill="url(#bg)"/>
       <rect x="0" y="0" width="${CW}" height="${TOPLINE_H}" fill="url(#topline)"/>
-
       <text x="24" y="${yHdrText}"
             font-family="sans-serif" font-size="18" font-weight="900"
             fill="${cor}" letter-spacing="2">${labelRar}</text>
@@ -308,10 +209,8 @@ async function gerarCardImagem(
             fill="#6B7280" text-anchor="end">${labelCat}</text>
       <line x1="0" y1="${yImgStart}" x2="${CW}" y2="${yImgStart}"
             stroke="${cor}" stroke-opacity="0.13" stroke-width="1"/>
-
       <rect x="0" y="${yImgStart}" width="${CW}" height="${IMG_H}" fill="#000"/>
       ${isLend ? `<rect x="0" y="${yImgStart}" width="${CW}" height="${IMG_H}" fill="url(#shimmer)"/>` : ''}
-
       <line x1="0" y1="${yBodyStart}" x2="${CW}" y2="${yBodyStart}"
             stroke="${cor}" stroke-opacity="0.13" stroke-width="1"/>
       <text x="24" y="${yName}"
@@ -325,7 +224,6 @@ async function gerarCardImagem(
                <text x="24" y="${yDescText}"
                      font-family="sans-serif" font-size="16"
                      fill="#6B7280">${desc}</text>` : ''}
-
       <rect x="0" y="${yFtrStart}" width="${CW}" height="${FTR_H}"
             fill="#000" fill-opacity="0.38"/>
       <line x1="0" y1="${yFtrStart}" x2="${CW}" y2="${yFtrStart}"
@@ -340,17 +238,94 @@ async function gerarCardImagem(
 
     const cardBaseBuf = await sharp(Buffer.from(cardSvg)).png().toBuffer();
 
-    // 3. Composita a foto + badges + borda
-    const cardWithImg = await sharp(cardBaseBuf)
-      .composite([{ input: charBuf, top: yImgStart, left: 0 }])
-      .png()
-      .toBuffer();
-
     const bordaSvg = `<svg width="${CW}" height="${CH}" xmlns="http://www.w3.org/2000/svg">
       <rect x="1" y="1" width="${CW - 2}" height="${CH - 2}"
             rx="${RX}" ry="${RX}" fill="none"
             stroke="${cor}" stroke-opacity="0.33" stroke-width="2"/>
     </svg>`;
+
+    const maskBufShared = await sharp(Buffer.from(maskSvg)).png().toBuffer();
+
+    if (isGif) {
+      // ── FLUXO GIF ANIMADO ──────────────────────────────────────────────────
+      // Abordagem frame-a-frame: extrai cada frame do GIF, aplica o template
+      // completo do card (igual ao fluxo estático, com máscara arredondada),
+      // e usa ffmpeg para combinar em WebP animado.
+
+      const gifMeta = await sharp(imgBuf, { animated: true }).metadata();
+      const numFrames = Math.min(gifMeta.pages ?? 1, 20); // máx 20 frames
+      const frameDelays = Array.isArray(gifMeta.delay)
+        ? gifMeta.delay.slice(0, numFrames)
+        : new Array(numFrames).fill(100);
+
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'noitada-card-'));
+      try {
+        for (let i = 0; i < numFrames; i++) {
+          // Extrai frame individual
+          const framePng = await sharp(imgBuf, { page: i })
+            .resize(CW, IMG_H, { fit: 'cover', position: 'top' })
+            .png()
+            .toBuffer();
+
+          // Aplica template completo do card (igual ao fluxo estático)
+          const cardWithFrame = await sharp(cardBaseBuf)
+            .composite([{ input: framePng, top: yImgStart, left: 0 }])
+            .png()
+            .toBuffer();
+
+          const cardWithBadgesEBorda = await sharp(cardWithFrame)
+            .composite([
+              { input: Buffer.from(badgeSvg), top: 0, left: 0 },
+              { input: Buffer.from(bordaSvg), top: 0, left: 0 },
+            ])
+            .png()
+            .toBuffer();
+
+          // Máscara arredondada (dest-in funciona em imagens estáticas)
+          const frameCard = await sharp(cardWithBadgesEBorda)
+            .composite([{ input: maskBufShared, blend: 'dest-in' }])
+            .png()
+            .toBuffer();
+
+          fs.writeFileSync(
+            path.join(tempDir, `frame${String(i).padStart(4, '0')}.png`),
+            frameCard,
+          );
+        }
+
+        // Arquivo concat do ffmpeg com durações por frame
+        const concatLines = frameDelays.map((delay, i) =>
+          `file 'frame${String(i).padStart(4, '0')}.png'\nduration ${(delay / 1000).toFixed(3)}`,
+        );
+        // ffmpeg precisa do último frame sem duration para fechar o loop corretamente
+        concatLines.push(`file 'frame${String(numFrames - 1).padStart(4, '0')}.png'`);
+        fs.writeFileSync(path.join(tempDir, 'concat.txt'), concatLines.join('\n'));
+
+        execSync(
+          `"${ffmpegStatic}" -y -f concat -safe 0 -i concat.txt -c:v libwebp_anim -loop 0 -quality 90 output.webp`,
+          { cwd: tempDir, timeout: 30_000 },
+        );
+
+        const buffer = fs.readFileSync(path.join(tempDir, 'output.webp'));
+        return { buffer, ext: 'webp' };
+
+      } finally {
+        try { fs.rmSync(tempDir, { recursive: true, force: true }); } catch { /* ignora */ }
+      }
+    }
+
+    // ── FLUXO IMAGEM ESTÁTICA ──────────────────────────────────────────────────
+    // 1. Extrair 1º frame
+    const charBuf = await sharp(imgBuf, { animated: false })
+      .resize(CW, IMG_H, { fit: 'cover', position: 'top' })
+      .png()
+      .toBuffer();
+
+    // 3. Composita a foto + badges + borda
+    const cardWithImg = await sharp(cardBaseBuf)
+      .composite([{ input: charBuf, top: yImgStart, left: 0 }])
+      .png()
+      .toBuffer();
 
     const cardComBadgesEBorda = await sharp(cardWithImg)
       .composite([
@@ -361,9 +336,8 @@ async function gerarCardImagem(
       .toBuffer();
 
     // 4. Aplicar máscara arredondada (corta os cantos do card)
-    const maskBuf = await sharp(Buffer.from(maskSvg)).png().toBuffer();
     const cardArredondado = await sharp(cardComBadgesEBorda)
-      .composite([{ input: maskBuf, blend: 'dest-in' }])
+      .composite([{ input: maskBufShared, blend: 'dest-in' }])
       .png()
       .toBuffer();
 
