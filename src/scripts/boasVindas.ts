@@ -65,7 +65,7 @@ export const iniciarBoasVindas = (client: Client) => {
           .setDescription(
             `Olá, **${member.user.username}**! 👋\n\n` +
             `Para liberar os canais do servidor, você precisa criar sua conta em nosso site.\n\n` +
-            `👉 **[Clique aqui para se cadastrar](https://www.noitadaserver.com.br/cadastro)**\n\n` +
+            `👉 **[Clique aqui para se cadastrar](https://noitadaserver.com.br/cadastro)**\n\n` +
             `Após finalizar o cadastro, o cargo **Membro** será entregue automaticamente e você terá acesso a tudo! 🎮`
           )
           .setThumbnail(member.guild.iconURL({ size: 256 }) ?? null)
