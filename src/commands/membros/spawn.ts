@@ -178,33 +178,45 @@ async function gerarCardImagem(
 
     if (isGif) {
       // ── FLUXO GIF ANIMADO ──────────────────────────────────────────────────
-      // Abordagem: compositar GIF animado SOBRE card base estático.
-      // Quando o input do composite é animado, o sharp produz output animado,
-      // aplicando o card base como fundo em cada frame. Evita extend+dest-in.
+      // Regra do sharp: quando a BASE é animada, composites estáticos são
+      // aplicados em cada frame automaticamente → output animado garantido.
+      //
+      // O GIF é redimensionado para CW × CH (tamanho total do card) e serve
+      // como base. O overlay SVG cobre header/footer com fundos sólidos e
+      // deixa a área da imagem transparente para o GIF aparecer.
 
-      // 1. Card base SVG (idêntico ao estático, com clipPath para cantos arredondados)
-      const cardGifBaseSvg = `<svg width="${CW}" height="${CH}" xmlns="http://www.w3.org/2000/svg">
+      // 1. GIF redimensionado para o tamanho total do card (BASE ANIMADA)
+      const gifBase = await sharp(imgBuf, { animated: true })
+        .resize(CW, CH, { fit: 'cover', position: 'top' })
+        .webp({ loop: 0 })
+        .toBuffer();
+
+      // 2. Overlay SVG: header/footer com fundo sólido, área da imagem transparente.
+      //    clipPath no próprio SVG para cantos arredondados (sem blend:dest-in).
+      //    gradientUnits="userSpaceOnUse" para gradiente correto em rects parciais.
+      const gifOverlaySvg = `<svg width="${CW}" height="${CH}" xmlns="http://www.w3.org/2000/svg">
         <defs>
           <clipPath id="cc">
             <rect width="${CW}" height="${CH}" rx="${RX}" ry="${RX}"/>
           </clipPath>
-          <linearGradient id="bg" x1="0.52" y1="0" x2="0.48" y2="1">
+          <linearGradient id="bg" x1="0" y1="0" x2="0" y2="${CH}" gradientUnits="userSpaceOnUse">
             <stop offset="0%"   stop-color="${gradStart}"/>
             <stop offset="100%" stop-color="${gradEnd}"/>
           </linearGradient>
-          <linearGradient id="topline" x1="0" y1="0" x2="1" y2="0">
+          <linearGradient id="topline" x1="0" y1="0" x2="${CW}" y2="0" gradientUnits="userSpaceOnUse">
             <stop offset="0%"   stop-color="${cor}" stop-opacity="0"/>
             <stop offset="50%"  stop-color="${cor}" stop-opacity="1"/>
             <stop offset="100%" stop-color="${cor}" stop-opacity="0"/>
           </linearGradient>
-          ${isLend ? `<linearGradient id="shimmer" x1="0" y1="0" x2="1" y2="1">
+          ${isLend ? `<linearGradient id="shimmer" x1="0" y1="${yImgStart}" x2="${CW}" y2="${yBodyStart}" gradientUnits="userSpaceOnUse">
             <stop offset="0%"   stop-color="${cor}" stop-opacity="0.09"/>
             <stop offset="55%"  stop-color="${cor}" stop-opacity="0"/>
             <stop offset="100%" stop-color="${cor}" stop-opacity="0.09"/>
           </linearGradient>` : ''}
         </defs>
         <g clip-path="url(#cc)">
-          <rect width="${CW}" height="${CH}" fill="url(#bg)"/>
+          <!-- Fundo header (cobre topo do GIF) -->
+          <rect x="0" y="0" width="${CW}" height="${yImgStart}" fill="url(#bg)"/>
           <rect x="0" y="0" width="${CW}" height="${TOPLINE_H}" fill="url(#topline)"/>
           <text x="24" y="${yHdrText}"
                 font-family="sans-serif" font-size="18" font-weight="900"
@@ -214,9 +226,10 @@ async function gerarCardImagem(
                 fill="#6B7280" text-anchor="end">${labelCat}</text>
           <line x1="0" y1="${yImgStart}" x2="${CW}" y2="${yImgStart}"
                 stroke="${cor}" stroke-opacity="0.13" stroke-width="1"/>
-          <!-- Área da imagem: fundo preto (GIF será sobreposto depois) -->
-          <rect x="0" y="${yImgStart}" width="${CW}" height="${IMG_H}" fill="#000"/>
+          <!-- Área da imagem: TRANSPARENTE — GIF animado aparece aqui -->
           ${isLend ? `<rect x="0" y="${yImgStart}" width="${CW}" height="${IMG_H}" fill="url(#shimmer)"/>` : ''}
+          <!-- Fundo body + footer (cobre rodapé do GIF) -->
+          <rect x="0" y="${yBodyStart}" width="${CW}" height="${BODY_H + FTR_H}" fill="url(#bg)"/>
           <line x1="0" y1="${yBodyStart}" x2="${CW}" y2="${yBodyStart}"
                 stroke="${cor}" stroke-opacity="0.13" stroke-width="1"/>
           <text x="24" y="${yName}"
@@ -246,25 +259,12 @@ async function gerarCardImagem(
         </g>
       </svg>`;
 
-      const cardGifBase = await sharp(Buffer.from(cardGifBaseSvg)).png().toBuffer();
-
-      // 2. Redimensionar o GIF preservando todos os frames, convertendo para WebP
-      const gifResized = await sharp(imgBuf, { animated: true })
-        .resize(CW, IMG_H, { fit: 'cover', position: 'top' })
-        .webp({ loop: 0 })
-        .toBuffer();
-
-      // 3. Compositar GIF animado sobre o card base estático.
-      //    sharp detecta o input animado e produz output animado,
-      //    repetindo o card base como fundo em cada frame do GIF.
-      const cardWithGif = await sharp(cardGifBase)
-        .composite([{ input: gifResized, top: yImgStart, left: 0 }])
-        .webp({ loop: 0 })
-        .toBuffer();
-
-      // 4. Badges sobre cada frame (não usa blend:dest-in → sem flickering)
-      const buffer = await sharp(cardWithGif, { animated: true })
-        .composite([{ input: Buffer.from(badgeSvg), top: 0, left: 0 }])
+      // 3. Compor overlay + badges sobre cada frame do GIF animado
+      const buffer = await sharp(gifBase, { animated: true })
+        .composite([
+          { input: Buffer.from(gifOverlaySvg), top: 0, left: 0 },
+          { input: Buffer.from(badgeSvg), top: 0, left: 0 },
+        ])
         .webp({ loop: 0 })
         .toBuffer();
 
