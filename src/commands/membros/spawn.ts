@@ -195,10 +195,16 @@ async function gerarCardImagem(
         })
         .toBuffer();
 
-      // 3. Overlay SVG: fundo apenas no header e no body/footer (área da imagem fica transparente)
-      //    Gradiente com gradientUnits="userSpaceOnUse" para mapear corretamente ao card inteiro
+      // 3. Overlay SVG: fundo no header e body/footer; área da imagem transparente.
+      //    clipPath arredondado no próprio SVG — evita usar blend:dest-in que não funciona
+      //    corretamente em imagens animadas (causaria flickering nos frames).
+      //    Os cantos arredondados (rx=40) ficam inteiramente dentro do header/footer,
+      //    que possuem background sólido, então o efeito visual é idêntico ao card estático.
       const gifOverlaySvg = `<svg width="${CW}" height="${CH}" xmlns="http://www.w3.org/2000/svg">
         <defs>
+          <clipPath id="cardClip">
+            <rect width="${CW}" height="${CH}" rx="${RX}" ry="${RX}"/>
+          </clipPath>
           <linearGradient id="bg" x1="0" y1="0" x2="0" y2="${CH}" gradientUnits="userSpaceOnUse">
             <stop offset="0%"   stop-color="${gradStart}"/>
             <stop offset="100%" stop-color="${gradEnd}"/>
@@ -215,76 +221,69 @@ async function gerarCardImagem(
           </linearGradient>` : ''}
         </defs>
 
-        <!-- Fundo do header -->
-        <rect x="0" y="0" width="${CW}" height="${yImgStart}" fill="url(#bg)"/>
-        <!-- Linha brilhante topo -->
-        <rect x="0" y="0" width="${CW}" height="${TOPLINE_H}" fill="url(#topline)"/>
+        <g clip-path="url(#cardClip)">
+          <!-- Fundo do header -->
+          <rect x="0" y="0" width="${CW}" height="${yImgStart}" fill="url(#bg)"/>
+          <!-- Linha brilhante topo -->
+          <rect x="0" y="0" width="${CW}" height="${TOPLINE_H}" fill="url(#topline)"/>
 
-        <!-- HEADER: raridade (esquerda) + categoria (direita) -->
-        <text x="24" y="${yHdrText}"
-              font-family="sans-serif" font-size="18" font-weight="900"
-              fill="${cor}" letter-spacing="2">${labelRar}</text>
-        <text x="${CW - 24}" y="${yHdrText}"
-              font-family="sans-serif" font-size="18"
-              fill="#6B7280" text-anchor="end">${labelCat}</text>
-        <line x1="0" y1="${yImgStart}" x2="${CW}" y2="${yImgStart}"
-              stroke="${cor}" stroke-opacity="0.13" stroke-width="1"/>
+          <!-- HEADER: raridade (esquerda) + categoria (direita) -->
+          <text x="24" y="${yHdrText}"
+                font-family="sans-serif" font-size="18" font-weight="900"
+                fill="${cor}" letter-spacing="2">${labelRar}</text>
+          <text x="${CW - 24}" y="${yHdrText}"
+                font-family="sans-serif" font-size="18"
+                fill="#6B7280" text-anchor="end">${labelCat}</text>
+          <line x1="0" y1="${yImgStart}" x2="${CW}" y2="${yImgStart}"
+                stroke="${cor}" stroke-opacity="0.13" stroke-width="1"/>
 
-        <!-- Shimmer lendário sobre a área da imagem -->
-        ${isLend ? `<rect x="0" y="${yImgStart}" width="${CW}" height="${IMG_H}" fill="url(#shimmer)"/>` : ''}
+          <!-- Shimmer lendário sobre a área da imagem -->
+          ${isLend ? `<rect x="0" y="${yImgStart}" width="${CW}" height="${IMG_H}" fill="url(#shimmer)"/>` : ''}
 
-        <!-- Fundo do body + footer -->
-        <rect x="0" y="${yBodyStart}" width="${CW}" height="${BODY_H + FTR_H}" fill="url(#bg)"/>
+          <!-- Fundo do body + footer -->
+          <rect x="0" y="${yBodyStart}" width="${CW}" height="${BODY_H + FTR_H}" fill="url(#bg)"/>
 
-        <!-- BODY: nome + vínculo + descrição -->
-        <line x1="0" y1="${yBodyStart}" x2="${CW}" y2="${yBodyStart}"
-              stroke="${cor}" stroke-opacity="0.13" stroke-width="1"/>
-        <text x="24" y="${yName}"
-              font-family="sans-serif" font-size="26" font-weight="900"
-              fill="white">${nome}</text>
-        <text x="24" y="${yVinculo}"
-              font-family="sans-serif" font-size="18" font-weight="700"
-              fill="${cor}" letter-spacing="2">${franquia}</text>
-        ${desc ? `<line x1="24" y1="${yDescLine}" x2="${CW - 24}" y2="${yDescLine}"
-                        stroke="${cor}" stroke-opacity="0.13" stroke-width="1"/>
-                 <text x="24" y="${yDescText}"
-                       font-family="sans-serif" font-size="16"
-                       fill="#6B7280">${desc}</text>` : ''}
+          <!-- BODY: nome + vínculo + descrição -->
+          <line x1="0" y1="${yBodyStart}" x2="${CW}" y2="${yBodyStart}"
+                stroke="${cor}" stroke-opacity="0.13" stroke-width="1"/>
+          <text x="24" y="${yName}"
+                font-family="sans-serif" font-size="26" font-weight="900"
+                fill="white">${nome}</text>
+          <text x="24" y="${yVinculo}"
+                font-family="sans-serif" font-size="18" font-weight="700"
+                fill="${cor}" letter-spacing="2">${franquia}</text>
+          ${desc ? `<line x1="24" y1="${yDescLine}" x2="${CW - 24}" y2="${yDescLine}"
+                          stroke="${cor}" stroke-opacity="0.13" stroke-width="1"/>
+                   <text x="24" y="${yDescText}"
+                         font-family="sans-serif" font-size="16"
+                         fill="#6B7280">${desc}</text>` : ''}
 
-        <!-- FOOTER -->
-        <rect x="0" y="${yFtrStart}" width="${CW}" height="${FTR_H}"
-              fill="#000" fill-opacity="0.38"/>
-        <line x1="0" y1="${yFtrStart}" x2="${CW}" y2="${yFtrStart}"
-              stroke="${cor}" stroke-opacity="0.13" stroke-width="1"/>
-        <text x="24" y="${yFtrText}"
-              font-family="sans-serif" font-size="18"
-              fill="#4B5563">&#9733; PTS</text>
-        <text x="${CW - 24}" y="${yFtrText}"
-              font-family="sans-serif" font-size="24" font-weight="900"
-              fill="${cor}" text-anchor="end">${pts.toLocaleString('pt-BR')}</text>
+          <!-- FOOTER -->
+          <rect x="0" y="${yFtrStart}" width="${CW}" height="${FTR_H}"
+                fill="#000" fill-opacity="0.38"/>
+          <line x1="0" y1="${yFtrStart}" x2="${CW}" y2="${yFtrStart}"
+                stroke="${cor}" stroke-opacity="0.13" stroke-width="1"/>
+          <text x="24" y="${yFtrText}"
+                font-family="sans-serif" font-size="18"
+                fill="#4B5563">&#9733; PTS</text>
+          <text x="${CW - 24}" y="${yFtrText}"
+                font-family="sans-serif" font-size="24" font-weight="900"
+                fill="${cor}" text-anchor="end">${pts.toLocaleString('pt-BR')}</text>
 
-        <!-- Borda arredondada -->
-        <rect x="1" y="1" width="${CW - 2}" height="${CH - 2}"
-              rx="${RX}" ry="${RX}" fill="none"
-              stroke="${cor}" stroke-opacity="0.33" stroke-width="2"/>
+          <!-- Borda arredondada -->
+          <rect x="1" y="1" width="${CW - 2}" height="${CH - 2}"
+                rx="${RX}" ry="${RX}" fill="none"
+                stroke="${cor}" stroke-opacity="0.33" stroke-width="2"/>
+        </g>
       </svg>`;
 
       // 4. Compor overlay + badges sobre o GIF (aplicado em cada frame automaticamente)
-      const gifComOverlay = await sharp(gifExtended, { animated: true })
+      //    Não usar blend:dest-in em animações — causa flickering (sharp usa apenas o 1º frame como base)
+      const buffer = await sharp(gifExtended, { animated: true })
         .composite([
           { input: Buffer.from(gifOverlaySvg), top: 0, left: 0 },
           { input: Buffer.from(badgeSvg), top: 0, left: 0 },
         ])
-        .toBuffer();
-
-      // 5. Aplicar máscara arredondada (corta os cantos em cada frame)
-      const maskBuf = await sharp(Buffer.from(maskSvg)).png().toBuffer();
-      const gifArredondado = await sharp(gifComOverlay, { animated: true })
-        .composite([{ input: maskBuf, blend: 'dest-in' }])
-        .toBuffer();
-
-      // 6. Exportar como WebP animado
-      const buffer = await sharp(gifArredondado, { animated: true })
         .webp({ loop: 0 })
         .toBuffer();
 
