@@ -98,6 +98,8 @@ const SIM_GENERO: Record<string, string> = {
   masculino: '\u2642', feminino: '\u2640', outros: '\u26A7',
 };
 
+type CardResult = { buffer: Buffer; ext: 'png' | 'webp' };
+
 // Gera o card visual idêntico ao PreviewCard do site (proporção 200px → 400px 2×)
 async function gerarCardImagem(
   imagemUrl: string,
@@ -109,7 +111,7 @@ async function gerarCardImagem(
   descricao: string | null,
   pts: number,
   rankingPos: number | null,
-): Promise<Buffer | null> {
+): Promise<CardResult | null> {
   try {
     const res = await fetch(imagemUrl);
     if (!res.ok) return null;
@@ -155,7 +157,142 @@ async function gerarCardImagem(
     const yDescText  = yVinculo + 32;
     const yFtrText   = yFtrStart + 35;
 
-    // 1. Foto do personagem (animated:false extrai 1º frame de GIFs)
+    // SVG da máscara arredondada (usada para clip no card final)
+    const maskSvg = `<svg width="${CW}" height="${CH}" xmlns="http://www.w3.org/2000/svg">
+      <rect width="${CW}" height="${CH}" rx="${RX}" ry="${RX}" fill="white"/>
+    </svg>`;
+
+    // Badges de gênero e GIF (overlay estático aplicado sobre a imagem)
+    const badgeSvg = `<svg width="${CW}" height="${CH}" xmlns="http://www.w3.org/2000/svg">
+      ${generoSim ? `<rect x="${CW - 50}" y="${yImgStart + 14}" width="36" height="36"
+              rx="7" fill="#000" fill-opacity="0.65"/>
+        <text x="${CW - 32}" y="${yImgStart + 38}"
+              font-family="sans-serif" font-size="20"
+              fill="${generoCor}" text-anchor="middle">${generoSim}</text>` : ''}
+      ${isGif ? `<rect x="14" y="${yImgStart + 14}" width="44" height="24"
+              rx="5" fill="#A855F7" fill-opacity="0.85"/>
+        <text x="36" y="${yImgStart + 30}"
+              font-family="sans-serif" font-size="13" font-weight="900"
+              fill="white" text-anchor="middle" letter-spacing="1">GIF</text>` : ''}
+    </svg>`;
+
+    if (isGif) {
+      // ── FLUXO GIF ANIMADO ──────────────────────────────────────────────────
+      // 1. Redimensionar o GIF preservando todos os frames
+      const gifResized = await sharp(imgBuf, { animated: true })
+        .resize(CW, IMG_H, { fit: 'cover', position: 'top' })
+        .toBuffer();
+
+      // 2. Extender o GIF para o tamanho completo do card (padding transparent ao redor)
+      const bottomPad = CH - yImgStart - IMG_H; // 174px
+      const gifExtended = await sharp(gifResized, { animated: true })
+        .extend({
+          top: yImgStart,
+          bottom: bottomPad,
+          left: 0,
+          right: 0,
+          background: { r: 0, g: 0, b: 0, alpha: 0 },
+        })
+        .toBuffer();
+
+      // 3. Overlay SVG: fundo apenas no header e no body/footer (área da imagem fica transparente)
+      //    Gradiente com gradientUnits="userSpaceOnUse" para mapear corretamente ao card inteiro
+      const gifOverlaySvg = `<svg width="${CW}" height="${CH}" xmlns="http://www.w3.org/2000/svg">
+        <defs>
+          <linearGradient id="bg" x1="0" y1="0" x2="0" y2="${CH}" gradientUnits="userSpaceOnUse">
+            <stop offset="0%"   stop-color="${gradStart}"/>
+            <stop offset="100%" stop-color="${gradEnd}"/>
+          </linearGradient>
+          <linearGradient id="topline" x1="0" y1="0" x2="${CW}" y2="0" gradientUnits="userSpaceOnUse">
+            <stop offset="0%"   stop-color="${cor}" stop-opacity="0"/>
+            <stop offset="50%"  stop-color="${cor}" stop-opacity="1"/>
+            <stop offset="100%" stop-color="${cor}" stop-opacity="0"/>
+          </linearGradient>
+          ${isLend ? `<linearGradient id="shimmer" x1="0" y1="0" x2="${CW}" y2="${IMG_H}" gradientUnits="userSpaceOnUse">
+            <stop offset="0%"   stop-color="${cor}" stop-opacity="0.09"/>
+            <stop offset="55%"  stop-color="${cor}" stop-opacity="0"/>
+            <stop offset="100%" stop-color="${cor}" stop-opacity="0.09"/>
+          </linearGradient>` : ''}
+        </defs>
+
+        <!-- Fundo do header -->
+        <rect x="0" y="0" width="${CW}" height="${yImgStart}" fill="url(#bg)"/>
+        <!-- Linha brilhante topo -->
+        <rect x="0" y="0" width="${CW}" height="${TOPLINE_H}" fill="url(#topline)"/>
+
+        <!-- HEADER: raridade (esquerda) + categoria (direita) -->
+        <text x="24" y="${yHdrText}"
+              font-family="sans-serif" font-size="18" font-weight="900"
+              fill="${cor}" letter-spacing="2">${labelRar}</text>
+        <text x="${CW - 24}" y="${yHdrText}"
+              font-family="sans-serif" font-size="18"
+              fill="#6B7280" text-anchor="end">${labelCat}</text>
+        <line x1="0" y1="${yImgStart}" x2="${CW}" y2="${yImgStart}"
+              stroke="${cor}" stroke-opacity="0.13" stroke-width="1"/>
+
+        <!-- Shimmer lendário sobre a área da imagem -->
+        ${isLend ? `<rect x="0" y="${yImgStart}" width="${CW}" height="${IMG_H}" fill="url(#shimmer)"/>` : ''}
+
+        <!-- Fundo do body + footer -->
+        <rect x="0" y="${yBodyStart}" width="${CW}" height="${BODY_H + FTR_H}" fill="url(#bg)"/>
+
+        <!-- BODY: nome + vínculo + descrição -->
+        <line x1="0" y1="${yBodyStart}" x2="${CW}" y2="${yBodyStart}"
+              stroke="${cor}" stroke-opacity="0.13" stroke-width="1"/>
+        <text x="24" y="${yName}"
+              font-family="sans-serif" font-size="26" font-weight="900"
+              fill="white">${nome}</text>
+        <text x="24" y="${yVinculo}"
+              font-family="sans-serif" font-size="18" font-weight="700"
+              fill="${cor}" letter-spacing="2">${franquia}</text>
+        ${desc ? `<line x1="24" y1="${yDescLine}" x2="${CW - 24}" y2="${yDescLine}"
+                        stroke="${cor}" stroke-opacity="0.13" stroke-width="1"/>
+                 <text x="24" y="${yDescText}"
+                       font-family="sans-serif" font-size="16"
+                       fill="#6B7280">${desc}</text>` : ''}
+
+        <!-- FOOTER -->
+        <rect x="0" y="${yFtrStart}" width="${CW}" height="${FTR_H}"
+              fill="#000" fill-opacity="0.38"/>
+        <line x1="0" y1="${yFtrStart}" x2="${CW}" y2="${yFtrStart}"
+              stroke="${cor}" stroke-opacity="0.13" stroke-width="1"/>
+        <text x="24" y="${yFtrText}"
+              font-family="sans-serif" font-size="18"
+              fill="#4B5563">&#9733; PTS</text>
+        <text x="${CW - 24}" y="${yFtrText}"
+              font-family="sans-serif" font-size="24" font-weight="900"
+              fill="${cor}" text-anchor="end">${pts.toLocaleString('pt-BR')}</text>
+
+        <!-- Borda arredondada -->
+        <rect x="1" y="1" width="${CW - 2}" height="${CH - 2}"
+              rx="${RX}" ry="${RX}" fill="none"
+              stroke="${cor}" stroke-opacity="0.33" stroke-width="2"/>
+      </svg>`;
+
+      // 4. Compor overlay + badges sobre o GIF (aplicado em cada frame automaticamente)
+      const gifComOverlay = await sharp(gifExtended, { animated: true })
+        .composite([
+          { input: Buffer.from(gifOverlaySvg), top: 0, left: 0 },
+          { input: Buffer.from(badgeSvg), top: 0, left: 0 },
+        ])
+        .toBuffer();
+
+      // 5. Aplicar máscara arredondada (corta os cantos em cada frame)
+      const maskBuf = await sharp(Buffer.from(maskSvg)).png().toBuffer();
+      const gifArredondado = await sharp(gifComOverlay, { animated: true })
+        .composite([{ input: maskBuf, blend: 'dest-in' }])
+        .toBuffer();
+
+      // 6. Exportar como WebP animado
+      const buffer = await sharp(gifArredondado, { animated: true })
+        .webp({ loop: 0 })
+        .toBuffer();
+
+      return { buffer, ext: 'webp' };
+    }
+
+    // ── FLUXO IMAGEM ESTÁTICA ──────────────────────────────────────────────────
+    // 1. Extrair 1º frame
     const charBuf = await sharp(imgBuf, { animated: false })
       .resize(CW, IMG_H, { fit: 'cover', position: 'top' })
       .png()
@@ -164,32 +301,25 @@ async function gerarCardImagem(
     // 2. Card base em SVG (sem imagem — será composta depois)
     const cardSvg = `<svg width="${CW}" height="${CH}" xmlns="http://www.w3.org/2000/svg">
       <defs>
-        <!-- Gradiente de fundo por raridade (170deg ≈ quase vertical) -->
         <linearGradient id="bg" x1="0.52" y1="0" x2="0.48" y2="1">
           <stop offset="0%"   stop-color="${gradStart}"/>
           <stop offset="100%" stop-color="${gradEnd}"/>
         </linearGradient>
-        <!-- Linha brilhante no topo -->
         <linearGradient id="topline" x1="0" y1="0" x2="1" y2="0">
           <stop offset="0%"   stop-color="${cor}" stop-opacity="0"/>
           <stop offset="50%"  stop-color="${cor}" stop-opacity="1"/>
           <stop offset="100%" stop-color="${cor}" stop-opacity="0"/>
         </linearGradient>
-        ${isLend ? `<!-- Shimmer lendário sobre a imagem -->
-        <linearGradient id="shimmer" x1="0" y1="0" x2="1" y2="1">
+        ${isLend ? `<linearGradient id="shimmer" x1="0" y1="0" x2="1" y2="1">
           <stop offset="0%"   stop-color="${cor}" stop-opacity="0.09"/>
           <stop offset="55%"  stop-color="${cor}" stop-opacity="0"/>
           <stop offset="100%" stop-color="${cor}" stop-opacity="0.09"/>
         </linearGradient>` : ''}
       </defs>
 
-      <!-- Fundo gradiente -->
       <rect width="${CW}" height="${CH}" fill="url(#bg)"/>
-
-      <!-- Linha brilhante topo -->
       <rect x="0" y="0" width="${CW}" height="${TOPLINE_H}" fill="url(#topline)"/>
 
-      <!-- ── HEADER: raridade (esquerda) + categoria (direita) ── -->
       <text x="24" y="${yHdrText}"
             font-family="sans-serif" font-size="18" font-weight="900"
             fill="${cor}" letter-spacing="2">${labelRar}</text>
@@ -199,18 +329,14 @@ async function gerarCardImagem(
       <line x1="0" y1="${yImgStart}" x2="${CW}" y2="${yImgStart}"
             stroke="${cor}" stroke-opacity="0.13" stroke-width="1"/>
 
-      <!-- ── ÁREA DA IMAGEM (placeholder preto — foto composta depois) ── -->
       <rect x="0" y="${yImgStart}" width="${CW}" height="${IMG_H}" fill="#000"/>
       ${isLend ? `<rect x="0" y="${yImgStart}" width="${CW}" height="${IMG_H}" fill="url(#shimmer)"/>` : ''}
 
-      <!-- ── BODY: nome + vínculo + descrição ── -->
       <line x1="0" y1="${yBodyStart}" x2="${CW}" y2="${yBodyStart}"
             stroke="${cor}" stroke-opacity="0.13" stroke-width="1"/>
-      <!-- Nome -->
       <text x="24" y="${yName}"
             font-family="sans-serif" font-size="26" font-weight="900"
             fill="white">${nome}</text>
-      <!-- Vínculo -->
       <text x="24" y="${yVinculo}"
             font-family="sans-serif" font-size="18" font-weight="700"
             fill="${cor}" letter-spacing="2">${franquia}</text>
@@ -220,7 +346,6 @@ async function gerarCardImagem(
                      font-family="sans-serif" font-size="16"
                      fill="#6B7280">${desc}</text>` : ''}
 
-      <!-- ── FOOTER: ★ PTS (esquerda) + valor (direita) ── -->
       <rect x="0" y="${yFtrStart}" width="${CW}" height="${FTR_H}"
             fill="#000" fill-opacity="0.38"/>
       <line x1="0" y1="${yFtrStart}" x2="${CW}" y2="${yFtrStart}"
@@ -235,43 +360,34 @@ async function gerarCardImagem(
 
     const cardBaseBuf = await sharp(Buffer.from(cardSvg)).png().toBuffer();
 
-    // 3. Composita a foto na área da imagem
+    // 3. Composita a foto + badges + borda
     const cardWithImg = await sharp(cardBaseBuf)
       .composite([{ input: charBuf, top: yImgStart, left: 0 }])
       .png()
       .toBuffer();
 
-    // 4. Overlay: badge de gênero (canto sup-dir da imagem) + badge GIF (canto sup-esq)
-    const badgeSvg = `<svg width="${CW}" height="${CH}" xmlns="http://www.w3.org/2000/svg">
-      ${generoSim ? `<rect x="${CW - 50}" y="${yImgStart + 14}" width="36" height="36"
-              rx="7" fill="#000" fill-opacity="0.65"/>
-        <text x="${CW - 32}" y="${yImgStart + 38}"
-              font-family="sans-serif" font-size="20"
-              fill="${generoCor}" text-anchor="middle">${generoSim}</text>` : ''}
-      ${isGif ? `<rect x="14" y="${yImgStart + 14}" width="44" height="24"
-              rx="5" fill="#A855F7" fill-opacity="0.85"/>
-        <text x="36" y="${yImgStart + 30}"
-              font-family="sans-serif" font-size="13" font-weight="900"
-              fill="white" text-anchor="middle" letter-spacing="1">GIF</text>` : ''}
-    </svg>`;
-
-    const cardWithBadges = await sharp(cardWithImg)
-      .composite([{ input: Buffer.from(badgeSvg), top: 0, left: 0 }])
-      .png()
-      .toBuffer();
-
-    // 5. Borda colorida (2px, stroke-opacity 0.33 — igual ao site: border: `2px solid ${m.hex}55`)
     const bordaSvg = `<svg width="${CW}" height="${CH}" xmlns="http://www.w3.org/2000/svg">
       <rect x="1" y="1" width="${CW - 2}" height="${CH - 2}"
             rx="${RX}" ry="${RX}" fill="none"
             stroke="${cor}" stroke-opacity="0.33" stroke-width="2"/>
     </svg>`;
-    const cardComBorda = await sharp(cardWithBadges)
-      .composite([{ input: Buffer.from(bordaSvg), top: 0, left: 0 }])
+
+    const cardComBadgesEBorda = await sharp(cardWithImg)
+      .composite([
+        { input: Buffer.from(badgeSvg), top: 0, left: 0 },
+        { input: Buffer.from(bordaSvg), top: 0, left: 0 },
+      ])
       .png()
       .toBuffer();
 
-    // 6. Glow externo (lendário = mais intenso, igual ao boxShadow do site)
+    // 4. Aplicar máscara arredondada (corta os cantos do card)
+    const maskBuf = await sharp(Buffer.from(maskSvg)).png().toBuffer();
+    const cardArredondado = await sharp(cardComBadgesEBorda)
+      .composite([{ input: maskBuf, blend: 'dest-in' }])
+      .png()
+      .toBuffer();
+
+    // 5. Glow externo
     const glowOpacity = isLend ? 0.75 : 0.5;
     const glowBlur    = isLend ? 18   : 13;
     const glowSvg = `<svg width="${TW}" height="${TH}" xmlns="http://www.w3.org/2000/svg">
@@ -285,11 +401,13 @@ async function gerarCardImagem(
     </svg>`;
     const glowBuf = await sharp(Buffer.from(glowSvg)).png().toBuffer();
 
-    // 7. Final: glow + card centralizado
-    return await sharp(glowBuf)
-      .composite([{ input: cardComBorda, top: GLOW, left: GLOW }])
+    // 6. Final: glow + card arredondado centralizado
+    const buffer = await sharp(glowBuf)
+      .composite([{ input: cardArredondado, top: GLOW, left: GLOW }])
       .png()
       .toBuffer();
+
+    return { buffer, ext: 'png' };
 
   } catch (err: any) {
     console.error('[spawn] erro ao gerar card:', err?.message);
@@ -423,7 +541,7 @@ export const execute = async (interaction: ChatInputCommandInteraction) => {
     const emoji = EMOJI_RARIDADE[carta.raridade] ?? '❓';
 
     const rankingPos = await buscarRankingUsuario(userId);
-    const imageBuffer = carta.imagem_url
+    const cardResult = carta.imagem_url
       ? await gerarCardImagem(carta.imagem_url, carta.personagem, carta.vinculo, carta.raridade, carta.categoria, carta.genero ?? 'outros', carta.descricao ?? null, pts, rankingPos)
       : null;
 
@@ -441,13 +559,13 @@ export const execute = async (interaction: ChatInputCommandInteraction) => {
         .setStyle(ButtonStyle.Success),
     );
 
-    let msg;
-    if (imageBuffer) {
-      const attachment = new AttachmentBuilder(imageBuffer, { name: `carta-${carta.id}.png` });
-      msg = await interaction.editReply({ content: textoSpawn, files: [attachment], components: [row] });
-    } else {
-      msg = await interaction.editReply({ content: textoSpawn, components: [row] });
-    }
+    const msg = cardResult
+      ? await interaction.editReply({
+          content: textoSpawn,
+          files: [new AttachmentBuilder(cardResult.buffer, { name: `carta-${carta.id}.${cardResult.ext}` })],
+          components: [row],
+        })
+      : await interaction.editReply({ content: textoSpawn, components: [row] });
 
     const collector = msg.createMessageComponentCollector({ time: 60_000 });
 
