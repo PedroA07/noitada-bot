@@ -175,7 +175,7 @@ async function gerarCardImagem(
     const sim        = SIMBOLO_RARIDADE[raridade] || '●';
     const generoSim  = SIM_GENERO[genero]  || '';
     const generoCor  = COR_GENERO[genero]  || '#9CA3AF';
-    const isGif      = imagemUrl.toLowerCase().endsWith('.gif');
+    const isGif      = /\.gif(?:[?#]|$)/i.test(imagemUrl);
 
     const labelRar  = xmlEsc(`${sim} ${(META_LABEL[raridade] || raridade).toUpperCase()}`);
     const labelCat  = xmlEsc(LABEL_CATEGORIA[categoria] || categoria);

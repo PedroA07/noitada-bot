@@ -92,6 +92,7 @@ function getYtDlpBaseArgs(): string[] {
 
 interface YtDlpInfo {
   title: string;
+  url: string;
   webpage_url: string;
   duration: number;
   thumbnail: string;
@@ -293,7 +294,8 @@ export async function buscarMusica(query: string, solicitadoPor: string): Promis
       if (!infos.length) throw new Error('Nenhum resultado YouTube encontrado');
       return infos.slice(0, 50).map(info => ({
         titulo: info.title || 'Sem titulo',
-        url: info.webpage_url || query,
+        // flat-playlist retorna 'url' em vez de 'webpage_url'; usa o que estiver disponível
+        url: info.webpage_url || info.url || query,
         duracao: formatarDuracao(info.duration || 0),
         thumbnail: info.thumbnail || null,
         solicitadoPor,
@@ -384,7 +386,8 @@ export async function tocarProxima(guildId: string): Promise<void> {
   } catch (error) {
     console.error('Erro ao tocar musica:', error);
     await servidor.canalTexto.send(`Erro ao tocar **${musica.titulo}**. Pulando...`);
-    await tocarProxima(guildId);
+    // setTimeout evita recursão infinita/stack overflow se várias músicas falharem seguidas
+    setTimeout(() => tocarProxima(guildId), 500);
   }
 }
 
