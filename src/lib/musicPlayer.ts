@@ -8,13 +8,9 @@ import {
   entersState,
   joinVoiceChannel,
   VoiceConnectionStatus,
-  StreamType,
 } from '@discordjs/voice';
 import { VoiceChannel, TextChannel, EmbedBuilder } from 'discord.js';
-import { spawn } from 'child_process';
-import { Readable } from 'stream';
-import { writeFileSync, existsSync } from 'fs';
-import { join } from 'path';
+import playdl from 'play-dl';
 
 export interface Musica {
   titulo: string;
@@ -51,98 +47,12 @@ export function detectarFonte(url: string): 'youtube' | 'spotify' | 'soundcloud'
   return 'texto';
 }
 
-const ytdlpPath = process.env.YTDLP_PATH || '/usr/local/bin/yt-dlp';
-const cookiePath = join('/tmp', 'yt-cookies.txt');
+// ── Spotify via API oficial → resolve para YouTube ───────────────────────────
 
-// Cria arquivo de cookie no formato Netscape a partir da env
-function garantirCookieFile(): string | null {
-  const cookie = process.env.YOUTUBE_COOKIE;
-  if (!cookie) return null;
-
-  if (!existsSync(cookiePath)) {
-    try {
-      // Converte string de cookie em formato Netscape
-      const linhas = ['# Netscape HTTP Cookie File', '# https://curl.haxx.se/rfc/cookie_spec.html', ''];
-      const pares = cookie.split(';').map(p => p.trim()).filter(Boolean);
-      for (const par of pares) {
-        const idx = par.indexOf('=');
-        if (idx === -1) continue;
-        const nome = par.substring(0, idx).trim();
-        const valor = par.substring(idx + 1).trim();
-        linhas.push(`.youtube.com\tTRUE\t/\tTRUE\t2147483647\t${nome}\t${valor}`);
-      }
-      writeFileSync(cookiePath, linhas.join('\n'));
-      console.log('Cookie file criado em:', cookiePath);
-    } catch (e) {
-      console.error('Erro ao criar cookie file:', e);
-      return null;
-    }
-  }
-  return cookiePath;
-}
-
-function getYtDlpBaseArgs(): string[] {
-  const args: string[] = ['--no-warnings', '--quiet'];
-  const cf = garantirCookieFile();
-  if (cf) {
-    args.push('--cookies', cf);
-  }
-  return args;
-}
-
-interface YtDlpInfo {
-  title: string;
-  url: string;
-  webpage_url: string;
-  duration: number;
-  thumbnail: string;
-}
-
-async function ytdlpGetInfo(query: string, isPlaylist = false): Promise<YtDlpInfo[]> {
-  return new Promise((resolve, reject) => {
-    const args = [
-      ...getYtDlpBaseArgs(),
-      '--dump-json',
-      '--flat-playlist',
-    ];
-
-    if (!isPlaylist) args.push('--no-playlist');
-
-    if (!query.startsWith('http')) {
-      args.push(`ytsearch1:${query}`);
-    } else {
-      args.push(query);
-    }
-
-    const proc = spawn(ytdlpPath, args);
-    let stdout = '';
-    let stderr = '';
-
-    proc.stdout.on('data', (d: Buffer) => { stdout += d.toString(); });
-    proc.stderr.on('data', (d: Buffer) => { stderr += d.toString(); });
-
-    proc.on('close', (code) => {
-      if (code !== 0 && !stdout) {
-        return reject(new Error(`yt-dlp falhou (code ${code}): ${stderr.trim()}`));
-      }
-      try {
-        const linhas = stdout.trim().split('\n').filter(Boolean);
-        const infos = linhas.map(l => JSON.parse(l));
-        resolve(infos);
-      } catch {
-        reject(new Error('Falha ao parsear JSON do yt-dlp'));
-      }
-    });
-
-    proc.on('error', (e) => reject(new Error(`Erro ao iniciar yt-dlp: ${e.message}`)));
-  });
-}
-
-// Busca token Spotify via Client Credentials
 async function getSpotifyToken(): Promise<string> {
   const clientId = process.env.SPOTIFY_CLIENT_ID;
   const clientSecret = process.env.SPOTIFY_CLIENT_SECRET;
-  if (!clientId || !clientSecret) throw new Error('Credenciais Spotify nao configuradas');
+  if (!clientId || !clientSecret) throw new Error('Credenciais Spotify não configuradas');
 
   const resp = await fetch('https://accounts.spotify.com/api/token', {
     method: 'POST',
@@ -152,17 +62,14 @@ async function getSpotifyToken(): Promise<string> {
     },
     body: 'grant_type=client_credentials',
   });
-
   if (!resp.ok) throw new Error(`Spotify token falhou: ${resp.status}`);
   const data = await resp.json() as { access_token: string };
   return data.access_token;
 }
 
-// Extrai ID e tipo da URL do Spotify
 function parseSpotifyUrl(url: string): { tipo: string; id: string } | null {
   const match = url.match(/spotify\.com\/(track|playlist|album)\/([a-zA-Z0-9]+)/);
-  if (!match) return null;
-  return { tipo: match[1], id: match[2] };
+  return match ? { tipo: match[1], id: match[2] } : null;
 }
 
 interface SpotifyTrack {
@@ -172,10 +79,21 @@ interface SpotifyTrack {
   album?: { images: { url: string }[] };
 }
 
+async function resolverSpotifyParaYT(nome: string, artista: string): Promise<{ url: string; duracao: number } | null> {
+  try {
+    const query = `${nome} ${artista}`.trim();
+    const results = await playdl.search(query, { limit: 1, source: { youtube: 'video' } });
+    if (!results.length) return null;
+    return { url: results[0].url, duracao: results[0].durationInSec || 0 };
+  } catch {
+    return null;
+  }
+}
+
 async function buscarSpotify(url: string, solicitadoPor: string): Promise<Musica[]> {
   const token = await getSpotifyToken();
   const parsed = parseSpotifyUrl(url);
-  if (!parsed) throw new Error('URL Spotify invalida');
+  if (!parsed) throw new Error('URL Spotify inválida');
 
   const headers = { Authorization: `Bearer ${token}` };
 
@@ -183,14 +101,13 @@ async function buscarSpotify(url: string, solicitadoPor: string): Promise<Musica
     const resp = await fetch(`https://api.spotify.com/v1/tracks/${parsed.id}`, { headers });
     if (!resp.ok) throw new Error(`Spotify API falhou: ${resp.status}`);
     const track = await resp.json() as SpotifyTrack;
-    const query = `${track.name} ${track.artists[0]?.name || ''}`;
-    const infos = await ytdlpGetInfo(query, false);
-    if (!infos.length) throw new Error('Musica nao encontrada no YouTube');
+    const yt = await resolverSpotifyParaYT(track.name, track.artists[0]?.name || '');
+    if (!yt) throw new Error('Música não encontrada no YouTube');
     return [{
       titulo: track.name,
-      url: infos[0].webpage_url,
+      url: yt.url,
       duracao: formatarDuracao(Math.floor(track.duration_ms / 1000)),
-      thumbnail: track.album?.images?.[0]?.url || infos[0].thumbnail || null,
+      thumbnail: track.album?.images?.[0]?.url || null,
       solicitadoPor,
       fonte: 'spotify',
     }];
@@ -204,23 +121,22 @@ async function buscarSpotify(url: string, solicitadoPor: string): Promise<Musica
     for (const item of data.items.slice(0, 50)) {
       if (!item.track) continue;
       try {
-        const query = `${item.track.name} ${item.track.artists[0]?.name || ''}`;
-        const infos = await ytdlpGetInfo(query, false);
-        if (infos.length) {
+        const yt = await resolverSpotifyParaYT(item.track.name, item.track.artists[0]?.name || '');
+        if (yt) {
           musicas.push({
             titulo: item.track.name,
-            url: infos[0].webpage_url,
+            url: yt.url,
             duracao: formatarDuracao(Math.floor(item.track.duration_ms / 1000)),
             thumbnail: item.track.album?.images?.[0]?.url || null,
             solicitadoPor,
             fonte: 'spotify',
           });
         }
-      } catch (e) {
-        console.warn('Erro ao buscar track Spotify:', item.track.name);
+      } catch {
+        console.warn('Erro ao resolver track Spotify:', item.track.name);
       }
     }
-    if (!musicas.length) throw new Error('Nenhuma musica da playlist encontrada');
+    if (!musicas.length) throw new Error('Nenhuma música da playlist encontrada');
     return musicas;
   }
 
@@ -231,12 +147,11 @@ async function buscarSpotify(url: string, solicitadoPor: string): Promise<Musica
     const musicas: Musica[] = [];
     for (const track of data.items.slice(0, 50)) {
       try {
-        const query = `${track.name} ${track.artists[0]?.name || ''}`;
-        const infos = await ytdlpGetInfo(query, false);
-        if (infos.length) {
+        const yt = await resolverSpotifyParaYT(track.name, track.artists[0]?.name || '');
+        if (yt) {
           musicas.push({
             titulo: track.name,
-            url: infos[0].webpage_url,
+            url: yt.url,
             duracao: formatarDuracao(Math.floor(track.duration_ms / 1000)),
             thumbnail: null,
             solicitadoPor,
@@ -244,95 +159,89 @@ async function buscarSpotify(url: string, solicitadoPor: string): Promise<Musica
           });
         }
       } catch {
-        console.warn('Erro ao buscar track album:', track.name);
+        console.warn('Erro ao resolver track álbum:', track.name);
       }
     }
-    if (!musicas.length) throw new Error('Nenhuma musica do album encontrada');
+    if (!musicas.length) throw new Error('Nenhuma música do álbum encontrada');
     return musicas;
   }
 
-  throw new Error('Tipo Spotify nao suportado');
+  throw new Error('Tipo Spotify não suportado');
 }
 
-function streamViaYtDlp(url: string): Readable {
-  console.log('Iniciando stream yt-dlp:', url);
-
-  const args = [
-    ...getYtDlpBaseArgs(),
-    '-f', 'bestaudio/best',
-    '--no-playlist',
-    '-o', '-',
-    url,
-  ];
-
-  const ytdlp = spawn(ytdlpPath, args);
-
-  ytdlp.stderr.on('data', (data: Buffer) => {
-    const msg = data.toString().trim();
-    if (msg) console.error('yt-dlp stderr:', msg);
-  });
-
-  ytdlp.on('error', (err: Error) => {
-    console.error('Erro yt-dlp spawn:', err.message);
-  });
-
-  return ytdlp.stdout as unknown as Readable;
-}
+// ── Busca principal ───────────────────────────────────────────────────────────
 
 export async function buscarMusica(query: string, solicitadoPor: string): Promise<Musica[]> {
   const fonte = detectarFonte(query);
 
   try {
     if (fonte === 'spotify') {
-      console.log('Buscando Spotify via API...');
       return await buscarSpotify(query, solicitadoPor);
     }
 
     if (fonte === 'youtube') {
       const isPlaylist = query.includes('list=') || query.includes('/playlist');
-      const infos = await ytdlpGetInfo(query, isPlaylist);
-      if (!infos.length) throw new Error('Nenhum resultado YouTube encontrado');
-      return infos.slice(0, 50).map(info => ({
-        titulo: info.title || 'Sem titulo',
-        // flat-playlist retorna 'url' em vez de 'webpage_url'; usa o que estiver disponível
-        url: info.webpage_url || info.url || query,
-        duracao: formatarDuracao(info.duration || 0),
-        thumbnail: info.thumbnail || null,
+
+      if (isPlaylist) {
+        const playlist = await playdl.playlist_info(query, { incomplete: true });
+        const videos = await playlist.all_videos();
+        return videos.slice(0, 50).map(v => ({
+          titulo: v.title || 'Sem título',
+          url: v.url,
+          duracao: formatarDuracao(v.durationInSec || 0),
+          thumbnail: v.thumbnails?.[0]?.url || null,
+          solicitadoPor,
+          fonte: 'youtube' as const,
+        }));
+      }
+
+      // URL de vídeo único
+      const info = await playdl.video_info(query);
+      const v = info.video_details;
+      return [{
+        titulo: v.title || 'Sem título',
+        url: v.url,
+        duracao: formatarDuracao(v.durationInSec || 0),
+        thumbnail: v.thumbnails?.[0]?.url || null,
         solicitadoPor,
         fonte: 'youtube' as const,
-      }));
-    }
-
-    if (fonte === 'soundcloud') {
-      const infos = await ytdlpGetInfo(query, false);
-      if (!infos.length) throw new Error('Nenhum resultado SoundCloud');
-      return [{
-        titulo: infos[0].title || 'Sem titulo',
-        url: infos[0].webpage_url || query,
-        duracao: formatarDuracao(infos[0].duration || 0),
-        thumbnail: infos[0].thumbnail || null,
-        solicitadoPor,
-        fonte: 'soundcloud' as const,
       }];
     }
 
-    // Busca por texto
-    console.log('Buscando por texto no YouTube:', query);
-    const infos = await ytdlpGetInfo(query, false);
-    if (!infos.length) throw new Error('Nenhum resultado encontrado');
+    if (fonte === 'soundcloud') {
+      const scInfo = await playdl.soundcloud(query);
+      if (scInfo.type === 'track') {
+        return [{
+          titulo: scInfo.name,
+          url: scInfo.url,
+          duracao: formatarDuracao(Math.floor(scInfo.durationInMs / 1000)),
+          thumbnail: (scInfo as any).thumbnail || null,
+          solicitadoPor,
+          fonte: 'soundcloud' as const,
+        }];
+      }
+      throw new Error('Tipo SoundCloud não suportado');
+    }
+
+    // Busca por texto no YouTube
+    const results = await playdl.search(query, { limit: 1, source: { youtube: 'video' } });
+    if (!results.length) throw new Error('Nenhum resultado encontrado');
+    const v = results[0];
     return [{
-      titulo: infos[0].title || 'Sem titulo',
-      url: infos[0].webpage_url,
-      duracao: formatarDuracao(infos[0].duration || 0),
-      thumbnail: infos[0].thumbnail || null,
+      titulo: v.title || 'Sem título',
+      url: v.url,
+      duracao: formatarDuracao(v.durationInSec || 0),
+      thumbnail: v.thumbnails?.[0]?.url || null,
       solicitadoPor,
       fonte: 'youtube' as const,
     }];
 
   } catch (error: any) {
-    throw new Error(`Erro ao buscar musica: ${error.message}`);
+    throw new Error(`Erro ao buscar música: ${error.message}`);
   }
 }
+
+// ── Player ────────────────────────────────────────────────────────────────────
 
 export async function tocarProxima(guildId: string): Promise<void> {
   const servidor = filas.get(guildId);
@@ -353,16 +262,10 @@ export async function tocarProxima(guildId: string): Promise<void> {
   const musica = servidor.fila.shift()!;
   servidor.tocandoAgora = musica;
 
-  if (!musica.url || !musica.url.startsWith('http')) {
-    await servidor.canalTexto.send(`URL invalida para **${musica.titulo}**. Pulando...`);
-    await tocarProxima(guildId);
-    return;
-  }
-
   try {
-    const stream = streamViaYtDlp(musica.url);
-    const resource: AudioResource = createAudioResource(stream, {
-      inputType: StreamType.Arbitrary,
+    const stream = await playdl.stream(musica.url, { quality: 2 });
+    const resource: AudioResource = createAudioResource(stream.stream, {
+      inputType: stream.type,
       inlineVolume: true,
     });
     resource.volume?.setVolume(servidor.volume / 100);
@@ -384,9 +287,8 @@ export async function tocarProxima(guildId: string): Promise<void> {
     await servidor.canalTexto.send({ embeds: [embed] });
 
   } catch (error) {
-    console.error('Erro ao tocar musica:', error);
-    await servidor.canalTexto.send(`Erro ao tocar **${musica.titulo}**. Pulando...`);
-    // setTimeout evita recursão infinita/stack overflow se várias músicas falharem seguidas
+    console.error('Erro ao tocar música:', error);
+    await servidor.canalTexto.send(`❌ Erro ao tocar **${musica.titulo}**. Pulando...`);
     setTimeout(() => tocarProxima(guildId), 500);
   }
 }
@@ -423,6 +325,15 @@ export async function conectar(canal: VoiceChannel, canalTexto: TextChannel, gui
       s.fila.unshift(s.tocandoAgora);
     }
     await tocarProxima(guildId);
+  });
+
+  player.on('error', async (error) => {
+    console.error('Erro no AudioPlayer:', error);
+    const s = filas.get(guildId);
+    if (s) {
+      await s.canalTexto.send(`❌ Erro ao reproduzir. Pulando para próxima...`);
+      setTimeout(() => tocarProxima(guildId), 500);
+    }
   });
 
   connection.on(VoiceConnectionStatus.Disconnected, async () => {
