@@ -709,6 +709,60 @@ async function sortearCarta(categoria?: string | null, genero?: string | null) {
   return pool[Math.floor(Math.random() * pool.length)];
 }
 
+type ImgCfg = { offset_x: number; offset_y: number; zoom: number };
+
+// Monta as linhas de botões conforme dono e índice de imagem atual
+function buildRows(
+  cartaId: string,
+  dono: string | null,
+  nivel: number,
+  imgIdx: number,
+  totalImgs: number,
+): ActionRowBuilder<ButtonBuilder>[] {
+  const rows: ActionRowBuilder<ButtonBuilder>[] = [];
+
+  const mainRow = new ActionRowBuilder<ButtonBuilder>();
+  if (dono) {
+    mainRow.addComponents(
+      new ButtonBuilder()
+        .setCustomId(`levelup_${cartaId}`)
+        .setLabel(`⬆️ Level Up  (Nível ${nivel} → ${nivel + 1})`)
+        .setStyle(ButtonStyle.Primary),
+    );
+  } else {
+    mainRow.addComponents(
+      new ButtonBuilder()
+        .setCustomId(`capturar_${cartaId}`)
+        .setLabel('🖐️ Capturar!')
+        .setStyle(ButtonStyle.Success),
+    );
+  }
+  rows.push(mainRow);
+
+  if (totalImgs > 1) {
+    const navRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`nav_${cartaId}_${imgIdx}_prev`)
+        .setEmoji('◀️')
+        .setStyle(ButtonStyle.Secondary)
+        .setDisabled(imgIdx === 0),
+      new ButtonBuilder()
+        .setCustomId(`nav_${cartaId}_${imgIdx}_info`)
+        .setLabel(`${imgIdx + 1} / ${totalImgs}`)
+        .setStyle(ButtonStyle.Secondary)
+        .setDisabled(true),
+      new ButtonBuilder()
+        .setCustomId(`nav_${cartaId}_${imgIdx}_next`)
+        .setEmoji('▶️')
+        .setStyle(ButtonStyle.Secondary)
+        .setDisabled(imgIdx === totalImgs - 1),
+    );
+    rows.push(navRow);
+  }
+
+  return rows;
+}
+
 export const execute = async (interaction: ChatInputCommandInteraction) => {
   const userId = interaction.user.id;
   const guildId = interaction.guildId!;
@@ -730,19 +784,25 @@ export const execute = async (interaction: ChatInputCommandInteraction) => {
     }
 
     const pts = calcPts(carta.raridade, carta.personagem, carta.vinculo);
-    const emoji = EMOJI_RARIDADE[carta.raridade] ?? '❓';
-
-    // Usa imagens[] como prioridade (igual ao site), cai em imagem_url como fallback
     const imagens: string[] = (carta as any).imagens ?? [];
     const imagemUrl: string | null = imagens[0] || carta.imagem_url || null;
 
-    // Posição da imagem: usa imagens_config[0] se existir (por-imagem), senão usa campos globais
-    type ImgCfg = { offset_x: number; offset_y: number; zoom: number };
+    // Posição da imagem: usa imagens_config[0] se existir, senão campos globais
     const imagensConfig: ImgCfg[] | null = (carta as any).imagens_config ?? null;
     const imgCfg0 = imagensConfig?.[0];
     const offsetX = imgCfg0?.offset_x ?? (carta as any).imagem_offset_x ?? 50;
     const offsetY = imgCfg0?.offset_y ?? (carta as any).imagem_offset_y ?? 50;
     const zoom    = imgCfg0?.zoom    ?? (carta as any).imagem_zoom    ?? 100;
+
+    // Verifica se a carta já tem dono
+    const { data: proprietario } = await supabase
+      .from('cartas_usuarios')
+      .select('discord_id, nivel')
+      .eq('carta_id', carta.id)
+      .maybeSingle();
+
+    const donoCarta: string | null = proprietario?.discord_id ?? null;
+    const nivelCarta = proprietario?.nivel ?? 1;
 
     const rankingPos = await buscarRankingUsuario(userId);
     const cardResult = imagemUrl
@@ -763,16 +823,6 @@ export const execute = async (interaction: ChatInputCommandInteraction) => {
         )
       : null;
 
-    const textoSpawn = `🖐️ **Clique em Capturar para pegar essa carta!**`;
-
-    const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
-      new ButtonBuilder()
-        .setCustomId(`capturar_${carta.id}`)
-        .setLabel('🖐️ Capturar!')
-        .setStyle(ButtonStyle.Success),
-    );
-
-    // Se o card falhou, gera versão com placeholder no slot da imagem
     const resultFinal = cardResult ?? await gerarCardPlaceholder(
       carta.personagem,
       carta.vinculo,
@@ -784,86 +834,220 @@ export const execute = async (interaction: ChatInputCommandInteraction) => {
       pts,
     ).catch(() => null);
 
+    const textoSpawn = donoCarta
+      ? `🔒 Esta carta pertence a <@${donoCarta}> · **Nível ${nivelCarta}**`
+      : `🖐️ **Clique em Capturar para pegar essa carta!**`;
+
+    const rows = buildRows(carta.id, donoCarta, nivelCarta, 0, imagens.length);
+
     const msg = resultFinal
       ? await interaction.editReply({
           content: textoSpawn,
           files: [new AttachmentBuilder(resultFinal.buffer, { name: `carta-${carta.id}.${resultFinal.ext}` })],
-          components: [row],
+          components: rows,
         })
-      : await interaction.editReply({ content: textoSpawn, components: [row] });
+      : await interaction.editReply({ content: textoSpawn, components: rows });
 
     const collector = msg.createMessageComponentCollector({ time: 60_000 });
 
     collector.on('collect', async (btn) => {
-      const capturadorId = btn.user.id;
+      const customId = btn.customId;
 
-      // Verifica limite diário do jogador que está capturando
-      const capturadorMember = interaction.guild?.members.cache.get(capturadorId)
-        || await interaction.guild?.members.fetch(capturadorId).catch(() => null);
-      const cargoIdsCapturador = capturadorMember ? [...capturadorMember.roles.cache.keys()] : [];
+      // ── NAVEGAÇÃO ENTRE FOTOS ─────────────────────────────────────────────
+      if (customId.startsWith('nav_')) {
+        const parts = customId.split('_');
+        const cartaId   = parts[1];
+        const currentIdx = parseInt(parts[2]);
+        const dir        = parts[3]; // 'prev' | 'next'
 
-      const verificacaoCapturador = await verificarCaptura(capturadorId, guildId, cargoIdsCapturador);
-      if (!verificacaoCapturador.pode) {
-        await btn.reply({ content: verificacaoCapturador.motivo!, flags: MessageFlags.Ephemeral });
+        const { data: c } = await supabase
+          .from('cartas')
+          .select('personagem, vinculo, sub_vinculo, raridade, categoria, genero, descricao, imagem_url, imagens, imagens_config, imagem_offset_x, imagem_offset_y, imagem_zoom')
+          .eq('id', cartaId)
+          .single();
+
+        if (!c) { await btn.deferUpdate(); return; }
+
+        const imgs: string[] = (c as any).imagens ?? [];
+        const newIdx = dir === 'next'
+          ? Math.min(currentIdx + 1, imgs.length - 1)
+          : Math.max(currentIdx - 1, 0);
+
+        if (newIdx === currentIdx) { await btn.deferUpdate(); return; }
+
+        const cfgs = (c as any).imagens_config as ImgCfg[] | null;
+        const cfg  = cfgs?.[newIdx];
+        const newUrl = imgs[newIdx] || (c as any).imagem_url || null;
+
+        await btn.deferUpdate();
+
+        if (newUrl) {
+          const cPts = calcPts(c.raridade, c.personagem, c.vinculo);
+          const newCard = await gerarCardImagem(
+            newUrl,
+            c.personagem, c.vinculo,
+            (c as any).sub_vinculo ?? null,
+            c.raridade, c.categoria,
+            c.genero ?? 'outros',
+            c.descricao ?? null,
+            cPts, null,
+            cfg?.offset_x ?? (c as any).imagem_offset_x ?? 50,
+            cfg?.offset_y ?? (c as any).imagem_offset_y ?? 50,
+            cfg?.zoom     ?? (c as any).imagem_zoom     ?? 100,
+          );
+
+          const { data: prop } = await supabase
+            .from('cartas_usuarios')
+            .select('discord_id, nivel')
+            .eq('carta_id', cartaId)
+            .maybeSingle();
+
+          const newDono  = prop?.discord_id ?? null;
+          const newNivel = prop?.nivel ?? 1;
+          const newRows  = buildRows(cartaId, newDono, newNivel, newIdx, imgs.length);
+          const newTexto = newDono
+            ? `🔒 Esta carta pertence a <@${newDono}> · **Nível ${newNivel}**`
+            : `🖐️ **Clique em Capturar para pegar essa carta!**`;
+
+          if (newCard) {
+            await interaction.editReply({
+              content: newTexto,
+              files: [new AttachmentBuilder(newCard.buffer, { name: `carta-${cartaId}.${newCard.ext}` })],
+              components: newRows,
+            });
+          }
+        }
         return;
       }
 
-      await btn.deferUpdate();
+      // ── LEVEL UP ──────────────────────────────────────────────────────────
+      if (customId.startsWith('levelup_')) {
+        const cartaId = customId.split('_')[1];
 
-      // Registra a carta na coleção do capturador
-      const cartaId = btn.customId.split('_')[1];
-      const { data: jaTemCarta } = await supabase
-        .from('cartas_usuarios')
-        .select('id, quantidade')
-        .eq('discord_id', capturadorId)
-        .eq('carta_id', cartaId)
-        .maybeSingle();
+        const { data: prop } = await supabase
+          .from('cartas_usuarios')
+          .select('id, discord_id, nivel')
+          .eq('carta_id', cartaId)
+          .maybeSingle();
 
-      if (jaTemCarta) {
+        if (!prop || prop.discord_id !== btn.user.id) {
+          await btn.reply({
+            content: '❌ Esta carta não é sua! Apenas o dono pode fazer level up.',
+            flags: MessageFlags.Ephemeral,
+          });
+          return;
+        }
+
+        const novoNivel = prop.nivel + 1;
         await supabase
           .from('cartas_usuarios')
-          .update({ quantidade: jaTemCarta.quantidade + 1 })
-          .eq('id', jaTemCarta.id);
-      } else {
-        await supabase
+          .update({ nivel: novoNivel })
+          .eq('id', prop.id);
+
+        await btn.reply({
+          content: `⬆️ **Nível ${prop.nivel} → ${novoNivel}!** A carta ficou mais forte, <@${btn.user.id}>! 🎉`,
+          flags: MessageFlags.Ephemeral,
+        });
+
+        // Atualiza texto e botões da mensagem (sem trocar a imagem)
+        const newRows = buildRows(cartaId, prop.discord_id, novoNivel, 0, imagens.length);
+        await interaction.editReply({
+          content: `🔒 Esta carta pertence a <@${prop.discord_id}> · **Nível ${novoNivel}**`,
+          components: newRows,
+        });
+        return;
+      }
+
+      // ── CAPTURAR ──────────────────────────────────────────────────────────
+      if (customId.startsWith('capturar_')) {
+        const capturadorId = btn.user.id;
+        const cartaId = customId.split('_')[1];
+
+        // Proteção contra race condition: re-verifica se ainda está livre
+        const { data: jaTemDono } = await supabase
           .from('cartas_usuarios')
-          .insert({ discord_id: capturadorId, carta_id: cartaId });
-      }
+          .select('discord_id')
+          .eq('carta_id', cartaId)
+          .maybeSingle();
 
-      // Atualiza capturas diárias do capturador
-      const hoje = new Date().toDateString();
-      const agora = new Date().toISOString();
-      const { data: capturaDiariaAtual } = await supabase
-        .from('capturas_diarias')
-        .select('*')
-        .eq('discord_id', capturadorId)
-        .eq('guild_id', guildId)
-        .gte('data_reset', hoje)
-        .maybeSingle();
+        if (jaTemDono) {
+          await btn.reply({
+            content: `❌ <@${jaTemDono.discord_id}> capturou esta carta antes de você!`,
+            flags: MessageFlags.Ephemeral,
+          });
+          return;
+        }
 
-      if (capturaDiariaAtual) {
-        await supabase
+        // Verifica limite diário
+        const capturadorMember = interaction.guild?.members.cache.get(capturadorId)
+          || await interaction.guild?.members.fetch(capturadorId).catch(() => null);
+        const cargoIdsCapturador = capturadorMember ? [...capturadorMember.roles.cache.keys()] : [];
+
+        const verificacaoCapturador = await verificarCaptura(capturadorId, guildId, cargoIdsCapturador);
+        if (!verificacaoCapturador.pode) {
+          await btn.reply({ content: verificacaoCapturador.motivo!, flags: MessageFlags.Ephemeral });
+          return;
+        }
+
+        await btn.deferUpdate();
+
+        // Insere como dono único (nivel = 1)
+        const { error: insertError } = await supabase
+          .from('cartas_usuarios')
+          .insert({ discord_id: capturadorId, carta_id: cartaId, nivel: 1, quantidade: 1 });
+
+        if (insertError) {
+          // Alguém capturou ao mesmo tempo (violação da constraint UNIQUE)
+          const { data: winner } = await supabase
+            .from('cartas_usuarios')
+            .select('discord_id')
+            .eq('carta_id', cartaId)
+            .maybeSingle();
+          await interaction.editReply({
+            content: winner
+              ? `❌ <@${winner.discord_id}> chegou primeiro!`
+              : '❌ Erro ao capturar. Tente novamente!',
+            components: [],
+          });
+          return;
+        }
+
+        // Atualiza capturas diárias
+        const hoje = new Date().toDateString();
+        const agora = new Date().toISOString();
+        const { data: capturaDiariaAtual } = await supabase
           .from('capturas_diarias')
-          .update({ total_capturas: capturaDiariaAtual.total_capturas + 1, ultima_captura: agora })
-          .eq('id', capturaDiariaAtual.id);
-      } else {
-        await supabase
-          .from('capturas_diarias')
-          .insert({ discord_id: capturadorId, guild_id: guildId, data_reset: agora, total_capturas: 1, ultima_captura: agora });
+          .select('*')
+          .eq('discord_id', capturadorId)
+          .eq('guild_id', guildId)
+          .gte('data_reset', hoje)
+          .maybeSingle();
+
+        if (capturaDiariaAtual) {
+          await supabase
+            .from('capturas_diarias')
+            .update({ total_capturas: capturaDiariaAtual.total_capturas + 1, ultima_captura: agora })
+            .eq('id', capturaDiariaAtual.id);
+        } else {
+          await supabase
+            .from('capturas_diarias')
+            .insert({ discord_id: capturadorId, guild_id: guildId, data_reset: agora, total_capturas: 1, ultima_captura: agora });
+        }
+
+        await interaction.editReply({
+          content: `🆕 **<@${capturadorId}> capturou esta carta! Nível 1** 🎉`,
+          components: [],
+        });
+        collector.stop();
       }
-
-      const textoCaptura = jaTemCarta
-        ? `🔄 <@${capturadorId}> capturou! Agora tem **${jaTemCarta.quantidade + 1}x**.`
-        : `🆕 **<@${capturadorId}> adicionou à coleção!**`;
-
-      await interaction.editReply({ content: textoCaptura, components: [] });
-      collector.stop();
     });
 
     collector.on('end', async (_, reason) => {
       if (reason === 'time') {
         await interaction.editReply({
-          content: '⏰ Tempo esgotado! A carta fugiu...',
+          content: donoCarta
+            ? `🔒 Esta carta pertence a <@${donoCarta}> · **Nível ${nivelCarta}**`
+            : '⏰ Tempo esgotado! A carta fugiu...',
           components: [],
         }).catch(() => {});
       }
