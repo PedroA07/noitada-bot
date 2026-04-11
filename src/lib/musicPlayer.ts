@@ -12,6 +12,22 @@ import {
 import { VoiceChannel, TextChannel, EmbedBuilder } from 'discord.js';
 import playdl from 'play-dl';
 
+// Configura cookies do YouTube para evitar bloqueio "Sign in to confirm you're not a bot"
+// Requer a env YOUTUBE_COOKIE com os cookies exportados do browser (formato: "key=val; key2=val2")
+(async () => {
+  const cookie = process.env.YOUTUBE_COOKIE;
+  if (cookie) {
+    try {
+      await playdl.setToken({ youtube: { cookie } });
+      console.log('[music] Cookies YouTube configurados com sucesso.');
+    } catch (e: any) {
+      console.warn('[music] Falha ao configurar cookies YouTube:', e?.message);
+    }
+  } else {
+    console.warn('[music] YOUTUBE_COOKIE não definido — YouTube pode bloquear streams.');
+  }
+})();
+
 export interface Musica {
   titulo: string;
   url: string;
