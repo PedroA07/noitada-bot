@@ -151,7 +151,7 @@ async function gerarCardImagem(
 ): Promise<CardResult | null> {
   try {
     const controller = new AbortController();
-    const fetchTimeout = setTimeout(() => controller.abort(), 10_000);
+    const fetchTimeout = setTimeout(() => controller.abort(), 30_000);
     let res: Response;
     try {
       res = await fetch(imagemUrl, { signal: controller.signal });
@@ -691,7 +691,7 @@ async function verificarCaptura(
 async function sortearCarta(categoria?: string | null, genero?: string | null) {
   let query = supabase
     .from('cartas')
-    .select('id, nome, personagem, vinculo, sub_vinculo, categoria, raridade, imagem_url, imagens, descricao, genero, imagem_offset_x, imagem_offset_y, imagem_zoom')
+    .select('id, nome, personagem, vinculo, sub_vinculo, categoria, raridade, imagem_url, imagens, descricao, genero, imagem_offset_x, imagem_offset_y, imagem_zoom, imagens_config')
     .eq('ativa', true);
 
   if (categoria) query = query.eq('categoria', categoria);
@@ -736,6 +736,14 @@ export const execute = async (interaction: ChatInputCommandInteraction) => {
     const imagens: string[] = (carta as any).imagens ?? [];
     const imagemUrl: string | null = imagens[0] || carta.imagem_url || null;
 
+    // Posição da imagem: usa imagens_config[0] se existir (por-imagem), senão usa campos globais
+    type ImgCfg = { offset_x: number; offset_y: number; zoom: number };
+    const imagensConfig: ImgCfg[] | null = (carta as any).imagens_config ?? null;
+    const imgCfg0 = imagensConfig?.[0];
+    const offsetX = imgCfg0?.offset_x ?? (carta as any).imagem_offset_x ?? 50;
+    const offsetY = imgCfg0?.offset_y ?? (carta as any).imagem_offset_y ?? 50;
+    const zoom    = imgCfg0?.zoom    ?? (carta as any).imagem_zoom    ?? 100;
+
     const rankingPos = await buscarRankingUsuario(userId);
     const cardResult = imagemUrl
       ? await gerarCardImagem(
@@ -749,9 +757,9 @@ export const execute = async (interaction: ChatInputCommandInteraction) => {
           carta.descricao ?? null,
           pts,
           rankingPos,
-          (carta as any).imagem_offset_x ?? 50,
-          (carta as any).imagem_offset_y ?? 50,
-          (carta as any).imagem_zoom ?? 100,
+          offsetX,
+          offsetY,
+          zoom,
         )
       : null;
 
