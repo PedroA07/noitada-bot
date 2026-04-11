@@ -425,6 +425,168 @@ async function gerarCardImagem(
   }
 }
 
+// Gera o card completo sem imagem — exibe placeholder no slot da foto
+async function gerarCardPlaceholder(
+  personagem: string,
+  vinculo: string,
+  subVinculo: string | null,
+  raridade: string,
+  categoria: string,
+  genero: string,
+  descricao: string | null,
+  pts: number,
+): Promise<CardResult> {
+  const CW = 400, TOPLINE_H = 4, HDR_H = 52, IMG_H = 490, BODY_H = 140, FTR_H = 54;
+  const CH = TOPLINE_H + HDR_H + IMG_H + BODY_H + FTR_H;
+  const RX = 40, GLOW = 32, TW = CW + GLOW * 2, TH = CH + GLOW * 2;
+
+  const cor       = COR_RARIDADE[raridade] || '#9CA3AF';
+  const gradStart = GRAD_START[raridade]   || '#374151';
+  const gradEnd   = GRAD_END[raridade]     || '#1F2937';
+  const isLend    = raridade === 'lendario';
+  const sim       = SIMBOLO_RARIDADE[raridade] || '●';
+  const generoSim = SIM_GENERO[genero] || '';
+  const generoCor = COR_GENERO[genero] || '#9CA3AF';
+
+  const labelRar = xmlEsc(`${sim} ${(META_LABEL[raridade] || raridade).toUpperCase()}`);
+  const labelCat = xmlEsc(LABEL_CATEGORIA[categoria] || categoria);
+  const nome     = xmlEsc(truncate(personagem, 20));
+  const franquia = xmlEsc(truncate(vinculo.toUpperCase(), 26));
+  const subFran  = subVinculo ? xmlEsc(truncate(subVinculo.toUpperCase(), 30)) : '';
+  const desc     = descricao  ? xmlEsc(truncate(descricao, 55)) : '';
+
+  const yImgStart  = TOPLINE_H + HDR_H;
+  const yBodyStart = yImgStart + IMG_H;
+  const yFtrStart  = yBodyStart + BODY_H;
+  const yHdrText   = TOPLINE_H + HDR_H / 2 + 7;
+  const yName      = yBodyStart + 36;
+  const yVinculo   = yName + 30;
+  const ySubVin    = yVinculo + 20;
+  const yDescLine  = subFran ? ySubVin + 14 : yVinculo + 14;
+  const yDescText  = yDescLine + 20;
+  const yFtrText   = yFtrStart + 35;
+  const yCenterImg = yImgStart + IMG_H / 2;
+
+  const cardSvg = `<svg width="${CW}" height="${CH}" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+      <linearGradient id="bg" x1="0.52" y1="0" x2="0.48" y2="1">
+        <stop offset="0%"   stop-color="${gradStart}"/>
+        <stop offset="100%" stop-color="${gradEnd}"/>
+      </linearGradient>
+      <linearGradient id="topline" x1="0" y1="0" x2="1" y2="0">
+        <stop offset="0%"   stop-color="${cor}" stop-opacity="0"/>
+        <stop offset="50%"  stop-color="${cor}" stop-opacity="1"/>
+        <stop offset="100%" stop-color="${cor}" stop-opacity="0"/>
+      </linearGradient>
+      ${isLend ? `<linearGradient id="shimmer" x1="0" y1="0" x2="1" y2="1">
+        <stop offset="0%"   stop-color="${cor}" stop-opacity="0.09"/>
+        <stop offset="55%"  stop-color="${cor}" stop-opacity="0"/>
+        <stop offset="100%" stop-color="${cor}" stop-opacity="0.09"/>
+      </linearGradient>` : ''}
+    </defs>
+    <rect width="${CW}" height="${CH}" fill="url(#bg)"/>
+    <rect x="0" y="0" width="${CW}" height="${TOPLINE_H}" fill="url(#topline)"/>
+    <text x="24" y="${yHdrText}"
+          font-family="sans-serif" font-size="18" font-weight="900"
+          fill="${cor}" letter-spacing="2">${labelRar}</text>
+    <text x="${CW - 24}" y="${yHdrText}"
+          font-family="sans-serif" font-size="18"
+          fill="#6B7280" text-anchor="end">${labelCat}</text>
+    <line x1="0" y1="${yImgStart}" x2="${CW}" y2="${yImgStart}"
+          stroke="${cor}" stroke-opacity="0.13" stroke-width="1"/>
+
+    <!-- Slot da foto: placeholder com ícone de imagem quebrada -->
+    <rect x="0" y="${yImgStart}" width="${CW}" height="${IMG_H}" fill="#0a0a14"/>
+    ${isLend ? `<rect x="0" y="${yImgStart}" width="${CW}" height="${IMG_H}" fill="url(#shimmer)"/>` : ''}
+    <rect x="${CW / 2 - 38}" y="${yCenterImg - 56}" width="76" height="76"
+          rx="12" fill="none" stroke="#2D3748" stroke-width="3"/>
+    <line x1="${CW / 2 - 19}" y1="${yCenterImg - 40}"
+          x2="${CW / 2 + 19}" y2="${yCenterImg - 4}"
+          stroke="#2D3748" stroke-width="3" stroke-linecap="round"/>
+    <line x1="${CW / 2 + 19}" y1="${yCenterImg - 40}"
+          x2="${CW / 2 - 19}" y2="${yCenterImg - 4}"
+          stroke="#2D3748" stroke-width="3" stroke-linecap="round"/>
+    <text x="${CW / 2}" y="${yCenterImg + 28}"
+          font-family="sans-serif" font-size="17" text-anchor="middle"
+          fill="#4B5563" letter-spacing="0.5">Problema com a imagem</text>
+
+    ${generoSim ? `<rect x="${CW - 50}" y="${yImgStart + 14}" width="36" height="36"
+            rx="7" fill="#000" fill-opacity="0.65"/>
+      <text x="${CW - 32}" y="${yImgStart + 38}"
+            font-family="sans-serif" font-size="20"
+            fill="${generoCor}" text-anchor="middle">${generoSim}</text>` : ''}
+
+    <line x1="0" y1="${yBodyStart}" x2="${CW}" y2="${yBodyStart}"
+          stroke="${cor}" stroke-opacity="0.13" stroke-width="1"/>
+    <text x="24" y="${yName}"
+          font-family="sans-serif" font-size="26" font-weight="900"
+          fill="white">${nome}</text>
+    <text x="24" y="${yVinculo}"
+          font-family="sans-serif" font-size="18" font-weight="700"
+          fill="${cor}" letter-spacing="2">${franquia}</text>
+    ${subFran ? `<text x="24" y="${ySubVin}"
+          font-family="sans-serif" font-size="14"
+          fill="#6B7280" letter-spacing="1">${subFran}</text>` : ''}
+    ${desc ? `<line x1="24" y1="${yDescLine}" x2="${CW - 24}" y2="${yDescLine}"
+                    stroke="${cor}" stroke-opacity="0.13" stroke-width="1"/>
+              <text x="24" y="${yDescText}"
+                    font-family="sans-serif" font-size="16"
+                    fill="#6B7280">${desc}</text>` : ''}
+    <rect x="0" y="${yFtrStart}" width="${CW}" height="${FTR_H}"
+          fill="#000" fill-opacity="0.38"/>
+    <line x1="0" y1="${yFtrStart}" x2="${CW}" y2="${yFtrStart}"
+          stroke="${cor}" stroke-opacity="0.13" stroke-width="1"/>
+    <text x="24" y="${yFtrText}"
+          font-family="sans-serif" font-size="18"
+          fill="#4B5563">&#9733; PTS</text>
+    <text x="${CW - 24}" y="${yFtrText}"
+          font-family="sans-serif" font-size="24" font-weight="900"
+          fill="${cor}" text-anchor="end">${pts.toLocaleString('pt-BR')}</text>
+  </svg>`;
+
+  const maskSvg = `<svg width="${CW}" height="${CH}" xmlns="http://www.w3.org/2000/svg">
+    <rect width="${CW}" height="${CH}" rx="${RX}" ry="${RX}" fill="white"/>
+  </svg>`;
+  const bordaSvg = `<svg width="${CW}" height="${CH}" xmlns="http://www.w3.org/2000/svg">
+    <rect x="1" y="1" width="${CW - 2}" height="${CH - 2}"
+          rx="${RX}" ry="${RX}" fill="none"
+          stroke="${cor}" stroke-opacity="0.33" stroke-width="2"/>
+  </svg>`;
+
+  const cardBuf  = await sharp(Buffer.from(cardSvg)).png().toBuffer();
+  const maskBuf  = await sharp(Buffer.from(maskSvg)).png().toBuffer();
+
+  const cardComBorda = await sharp(cardBuf)
+    .composite([{ input: Buffer.from(bordaSvg), top: 0, left: 0 }])
+    .png()
+    .toBuffer();
+
+  const cardArredondado = await sharp(cardComBorda)
+    .composite([{ input: maskBuf, blend: 'dest-in' }])
+    .png()
+    .toBuffer();
+
+  const glowOpacity = isLend ? 0.75 : 0.5;
+  const glowBlur    = isLend ? 18   : 13;
+  const glowSvg = `<svg width="${TW}" height="${TH}" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+      <filter id="g" x="-50%" y="-50%" width="200%" height="200%">
+        <feGaussianBlur stdDeviation="${glowBlur}"/>
+      </filter>
+    </defs>
+    <rect x="${GLOW - 4}" y="${GLOW - 4}" width="${CW + 8}" height="${CH + 8}"
+          rx="${RX + 4}" fill="${cor}" opacity="${glowOpacity}" filter="url(#g)"/>
+  </svg>`;
+  const glowBuf = await sharp(Buffer.from(glowSvg)).png().toBuffer();
+
+  const buffer = await sharp(glowBuf)
+    .composite([{ input: cardArredondado, top: GLOW, left: GLOW }])
+    .png()
+    .toBuffer();
+
+  return { buffer, ext: 'png' };
+}
+
 
 export const data = new SlashCommandBuilder()
   .setName('spawn')
@@ -582,28 +744,25 @@ export const execute = async (interaction: ChatInputCommandInteraction) => {
         .setStyle(ButtonStyle.Success),
     );
 
-    let msg;
-    if (cardResult) {
-      // Card gerado com sucesso — envia como arquivo
-      msg = await interaction.editReply({
-        content: textoSpawn,
-        files: [new AttachmentBuilder(cardResult.buffer, { name: `carta-${carta.id}.${cardResult.ext}` })],
-        components: [row],
-      });
-    } else if (imagemUrl) {
-      // Falha ao gerar card — fallback: embed com imagem bruta
-      const { EmbedBuilder } = await import('discord.js');
-      const cor = COR_RARIDADE[carta.raridade] || '#9CA3AF';
-      const embed = new EmbedBuilder()
-        .setColor(cor as any)
-        .setTitle(`${EMOJI_RARIDADE[carta.raridade] ?? '❓'} ${carta.personagem}`)
-        .setDescription(`**${carta.vinculo}**`)
-        .setImage(imagemUrl);
-      msg = await interaction.editReply({ content: textoSpawn, embeds: [embed], components: [row] });
-    } else {
-      // Sem imagem alguma
-      msg = await interaction.editReply({ content: textoSpawn, components: [row] });
-    }
+    // Se o card falhou, gera versão com placeholder no slot da imagem
+    const resultFinal = cardResult ?? await gerarCardPlaceholder(
+      carta.personagem,
+      carta.vinculo,
+      (carta as any).sub_vinculo ?? null,
+      carta.raridade,
+      carta.categoria,
+      carta.genero ?? 'outros',
+      carta.descricao ?? null,
+      pts,
+    ).catch(() => null);
+
+    const msg = resultFinal
+      ? await interaction.editReply({
+          content: textoSpawn,
+          files: [new AttachmentBuilder(resultFinal.buffer, { name: `carta-${carta.id}.${resultFinal.ext}` })],
+          components: [row],
+        })
+      : await interaction.editReply({ content: textoSpawn, components: [row] });
 
     const collector = msg.createMessageComponentCollector({ time: 60_000 });
 
