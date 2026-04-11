@@ -321,6 +321,20 @@ async function gerarCardImagem(
           return Math.max(d, 20);
         });
 
+        // Gera o glow uma vez — é igual para todos os frames
+        const glowOpacity = isLend ? 0.75 : 0.5;
+        const glowBlur    = isLend ? 18   : 13;
+        const glowSvg = `<svg width="${TW}" height="${TH}" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <filter id="g" x="-50%" y="-50%" width="200%" height="200%">
+              <feGaussianBlur stdDeviation="${glowBlur}"/>
+            </filter>
+          </defs>
+          <rect x="${GLOW - 4}" y="${GLOW - 4}" width="${CW + 8}" height="${CH + 8}"
+                rx="${RX + 4}" fill="${cor}" opacity="${glowOpacity}" filter="url(#g)"/>
+        </svg>`;
+        const glowBuf = await sharp(Buffer.from(glowSvg)).png().toBuffer();
+
         const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'noitada-card-'));
         try {
           for (let i = 0; i < numFrames; i++) {
@@ -344,9 +358,15 @@ async function gerarCardImagem(
               .png()
               .toBuffer();
 
+            // Aplica o glow externo em cada frame (igual ao fluxo estático)
+            const frameComGlow = await sharp(glowBuf)
+              .composite([{ input: frameCard, top: GLOW, left: GLOW }])
+              .png()
+              .toBuffer();
+
             fs.writeFileSync(
               path.join(tempDir, `frame${String(i).padStart(4, '0')}.png`),
-              frameCard,
+              frameComGlow,
             );
           }
 
