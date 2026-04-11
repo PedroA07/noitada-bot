@@ -105,17 +105,49 @@ const SIM_GENERO: Record<string, string> = {
 
 type CardResult = { buffer: Buffer; ext: 'png' | 'webp' };
 
+// Recorta a imagem respeitando offset e zoom do banco (igual ao site)
+async function cropImagem(
+  imgBuf: Buffer,
+  targetW: number,
+  targetH: number,
+  offsetX: number,
+  offsetY: number,
+  zoom: number,
+  page: number,
+): Promise<Buffer> {
+  const zoomFactor = Math.max(1, zoom / 100);
+  const effectiveW = Math.round(targetW * zoomFactor);
+  const effectiveH = Math.round(targetH * zoomFactor);
+
+  const resized = await sharp(imgBuf, { page, animated: false })
+    .resize(effectiveW, effectiveH, { fit: 'cover' })
+    .png()
+    .toBuffer();
+
+  const cropX = Math.max(0, Math.round((effectiveW - targetW) * (offsetX / 100)));
+  const cropY = Math.max(0, Math.round((effectiveH - targetH) * (offsetY / 100)));
+
+  return sharp(resized)
+    .extract({ left: cropX, top: cropY, width: targetW, height: targetH })
+    .png()
+    .toBuffer();
+}
+
 // Gera o card visual idêntico ao PreviewCard do site (proporção 200px → 400px 2×)
 async function gerarCardImagem(
   imagemUrl: string,
   personagem: string,
   vinculo: string,
+  subVinculo: string | null,
   raridade: string,
   categoria: string,
   genero: string,
   descricao: string | null,
   pts: number,
   rankingPos: number | null,
+  offsetX: number,
+  offsetY: number,
+  zoom: number,
 ): Promise<CardResult | null> {
   try {
     const res = await fetch(imagemUrl);
@@ -128,9 +160,9 @@ async function gerarCardImagem(
     const TOPLINE_H = 4;    // linha brilhante no topo
     const HDR_H     = 52;   // header: raridade + categoria
     const IMG_H     = 490;  // área da foto (245 × 2)
-    const BODY_H    = 120;  // nome + vínculo + descrição
+    const BODY_H    = 140;  // nome + vínculo + sub_vínculo + descrição
     const FTR_H     = 54;   // footer com pontuação
-    const CH        = TOPLINE_H + HDR_H + IMG_H + BODY_H + FTR_H; // 720
+    const CH        = TOPLINE_H + HDR_H + IMG_H + BODY_H + FTR_H; // 740
     const RX        = 40;
     const GLOW      = 32;
     const TW        = CW + GLOW * 2;
@@ -145,21 +177,23 @@ async function gerarCardImagem(
     const generoCor  = COR_GENERO[genero]  || '#9CA3AF';
     const isGif      = imagemUrl.toLowerCase().endsWith('.gif');
 
-    const labelRar = xmlEsc(`${sim} ${(META_LABEL[raridade] || raridade).toUpperCase()}`);
-    const labelCat = xmlEsc(LABEL_CATEGORIA[categoria] || categoria);
-    const nome     = xmlEsc(truncate(personagem, 20));
-    const franquia = xmlEsc(truncate(vinculo.toUpperCase(), 26));
-    const desc     = descricao ? xmlEsc(truncate(descricao, 55)) : '';
+    const labelRar  = xmlEsc(`${sim} ${(META_LABEL[raridade] || raridade).toUpperCase()}`);
+    const labelCat  = xmlEsc(LABEL_CATEGORIA[categoria] || categoria);
+    const nome      = xmlEsc(truncate(personagem, 20));
+    const franquia  = xmlEsc(truncate(vinculo.toUpperCase(), 26));
+    const subFran   = subVinculo ? xmlEsc(truncate(subVinculo.toUpperCase(), 30)) : '';
+    const desc      = descricao ? xmlEsc(truncate(descricao, 55)) : '';
 
     // Posições Y
     const yImgStart  = TOPLINE_H + HDR_H;                     // 56
     const yBodyStart = yImgStart + IMG_H;                      // 546
-    const yFtrStart  = yBodyStart + BODY_H;                    // 666
+    const yFtrStart  = yBodyStart + BODY_H;                    // 686
     const yHdrText   = TOPLINE_H + HDR_H / 2 + 7;             // ~33
     const yName      = yBodyStart + 36;                        // 582
     const yVinculo   = yName + 30;                             // 612
-    const yDescLine  = yVinculo + 14;
-    const yDescText  = yVinculo + 32;
+    const ySubVin    = yVinculo + 20;                          // 632 (só se tiver sub_vinculo)
+    const yDescLine  = subFran ? ySubVin + 14 : yVinculo + 14;
+    const yDescText  = yDescLine + 20;
     const yFtrText   = yFtrStart + 35;
 
     // SVG da máscara arredondada (usada para clip no card final)
@@ -219,6 +253,9 @@ async function gerarCardImagem(
       <text x="24" y="${yVinculo}"
             font-family="sans-serif" font-size="18" font-weight="700"
             fill="${cor}" letter-spacing="2">${franquia}</text>
+      ${subFran ? `<text x="24" y="${ySubVin}"
+            font-family="sans-serif" font-size="14"
+            fill="#6B7280" letter-spacing="1">${subFran}</text>` : ''}
       ${desc ? `<line x1="24" y1="${yDescLine}" x2="${CW - 24}" y2="${yDescLine}"
                       stroke="${cor}" stroke-opacity="0.13" stroke-width="1"/>
                <text x="24" y="${yDescText}"
@@ -248,84 +285,75 @@ async function gerarCardImagem(
 
     if (isGif) {
       // ── FLUXO GIF ANIMADO ──────────────────────────────────────────────────
-      // Abordagem frame-a-frame: extrai cada frame do GIF, aplica o template
-      // completo do card (igual ao fluxo estático, com máscara arredondada),
-      // e usa ffmpeg para combinar em WebP animado.
-
-      const gifMeta = await sharp(imgBuf, { animated: true }).metadata();
-      const numFrames = Math.min(gifMeta.pages ?? 1, 20); // máx 20 frames
-
-      // Normaliza delays por frame: respeita tempo variável de cada frame,
-      // preenche frames sem delay com o último valor conhecido (ou 100ms),
-      // e garante mínimo de 20ms para evitar problemas no ffmpeg.
-      const rawDelays = Array.isArray(gifMeta.delay) ? gifMeta.delay : [];
-      const frameDelays = Array.from({ length: numFrames }, (_, i) => {
-        const d = rawDelays[i] ?? rawDelays[rawDelays.length - 1] ?? 100;
-        return Math.max(d, 20); // mínimo 20ms
-      });
-
-      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'noitada-card-'));
+      // Tenta gerar WebP animado frame-a-frame com ffmpeg.
+      // Se falhar por qualquer motivo, cai no fluxo estático (primeiro frame).
       try {
-        for (let i = 0; i < numFrames; i++) {
-          // Extrai frame individual
-          const framePng = await sharp(imgBuf, { page: i })
-            .resize(CW, IMG_H, { fit: 'cover', position: 'top' })
-            .png()
-            .toBuffer();
+        if (!ffmpegStatic) throw new Error('ffmpeg-static não disponível');
 
-          // Aplica template completo do card (igual ao fluxo estático)
-          const cardWithFrame = await sharp(cardBaseBuf)
-            .composite([{ input: framePng, top: yImgStart, left: 0 }])
-            .png()
-            .toBuffer();
+        const gifMeta = await sharp(imgBuf, { animated: true }).metadata();
+        const numFrames = Math.min(gifMeta.pages ?? 1, 20); // máx 20 frames
 
-          const cardWithBadgesEBorda = await sharp(cardWithFrame)
-            .composite([
-              { input: Buffer.from(badgeSvg), top: 0, left: 0 },
-              { input: Buffer.from(bordaSvg), top: 0, left: 0 },
-            ])
-            .png()
-            .toBuffer();
+        const rawDelays = Array.isArray(gifMeta.delay) ? gifMeta.delay : [];
+        const frameDelays = Array.from({ length: numFrames }, (_, i) => {
+          const d = rawDelays[i] ?? rawDelays[rawDelays.length - 1] ?? 100;
+          return Math.max(d, 20);
+        });
 
-          // Máscara arredondada (dest-in funciona em imagens estáticas)
-          const frameCard = await sharp(cardWithBadgesEBorda)
-            .composite([{ input: maskBufShared, blend: 'dest-in' }])
-            .png()
-            .toBuffer();
+        const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'noitada-card-'));
+        try {
+          for (let i = 0; i < numFrames; i++) {
+            const framePng = await cropImagem(imgBuf, CW, IMG_H, offsetX, offsetY, zoom, i);
 
-          fs.writeFileSync(
-            path.join(tempDir, `frame${String(i).padStart(4, '0')}.png`),
-            frameCard,
+            const cardWithFrame = await sharp(cardBaseBuf)
+              .composite([{ input: framePng, top: yImgStart, left: 0 }])
+              .png()
+              .toBuffer();
+
+            const cardWithBadgesEBorda = await sharp(cardWithFrame)
+              .composite([
+                { input: Buffer.from(badgeSvg), top: 0, left: 0 },
+                { input: Buffer.from(bordaSvg), top: 0, left: 0 },
+              ])
+              .png()
+              .toBuffer();
+
+            const frameCard = await sharp(cardWithBadgesEBorda)
+              .composite([{ input: maskBufShared, blend: 'dest-in' }])
+              .png()
+              .toBuffer();
+
+            fs.writeFileSync(
+              path.join(tempDir, `frame${String(i).padStart(4, '0')}.png`),
+              frameCard,
+            );
+          }
+
+          const concatLines = frameDelays.map((delay, i) =>
+            `file 'frame${String(i).padStart(4, '0')}.png'\nduration ${(delay / 1000).toFixed(3)}`,
           );
+          concatLines.push(`file 'frame${String(numFrames - 1).padStart(4, '0')}.png'`);
+          fs.writeFileSync(path.join(tempDir, 'concat.txt'), concatLines.join('\n'));
+
+          execSync(
+            `"${ffmpegStatic}" -y -f concat -safe 0 -i concat.txt -c:v libwebp_anim -loop 0 -quality 90 output.webp`,
+            { cwd: tempDir, timeout: 30_000 },
+          );
+
+          const buffer = fs.readFileSync(path.join(tempDir, 'output.webp'));
+          return { buffer, ext: 'webp' };
+
+        } finally {
+          try { fs.rmSync(tempDir, { recursive: true, force: true }); } catch { /* ignora */ }
         }
-
-        // Arquivo concat do ffmpeg com durações por frame
-        const concatLines = frameDelays.map((delay, i) =>
-          `file 'frame${String(i).padStart(4, '0')}.png'\nduration ${(delay / 1000).toFixed(3)}`,
-        );
-        // ffmpeg precisa do último frame sem duration para fechar o loop corretamente
-        concatLines.push(`file 'frame${String(numFrames - 1).padStart(4, '0')}.png'`);
-        fs.writeFileSync(path.join(tempDir, 'concat.txt'), concatLines.join('\n'));
-
-        execSync(
-          `"${ffmpegStatic}" -y -f concat -safe 0 -i concat.txt -c:v libwebp_anim -loop 0 -quality 90 output.webp`,
-          { cwd: tempDir, timeout: 30_000 },
-        );
-
-        const buffer = fs.readFileSync(path.join(tempDir, 'output.webp'));
-        return { buffer, ext: 'webp' };
-
-      } finally {
-        try { fs.rmSync(tempDir, { recursive: true, force: true }); } catch { /* ignora */ }
+      } catch (gifErr: any) {
+        console.warn('[spawn] GIF animado falhou, usando primeiro frame:', gifErr?.message);
+        // Cai no fluxo estático abaixo
       }
     }
 
-    // ── FLUXO IMAGEM ESTÁTICA ──────────────────────────────────────────────────
-    // 1. Extrair 1º frame
-    const charBuf = await sharp(imgBuf, { animated: false })
-      .resize(CW, IMG_H, { fit: 'cover', position: 'top' })
-      .png()
-      .toBuffer();
+    // ── FLUXO IMAGEM ESTÁTICA (ou fallback do GIF) ────────────────────────────
+    // Extrai 1º frame com offset/zoom do banco de dados
+    const charBuf = await cropImagem(imgBuf, CW, IMG_H, offsetX, offsetY, zoom, 0);
 
     // 3. Composita a foto + badges + borda
     const cardWithImg = await sharp(cardBaseBuf)
@@ -459,7 +487,7 @@ async function verificarCaptura(
 async function sortearCarta(categoria?: string | null, genero?: string | null) {
   let query = supabase
     .from('cartas')
-    .select('id, nome, personagem, vinculo, categoria, raridade, imagem_url, descricao, genero')
+    .select('id, nome, personagem, vinculo, sub_vinculo, categoria, raridade, imagem_url, descricao, genero, imagem_offset_x, imagem_offset_y, imagem_zoom')
     .eq('ativa', true);
 
   if (categoria) query = query.eq('categoria', categoria);
@@ -502,7 +530,21 @@ export const execute = async (interaction: ChatInputCommandInteraction) => {
 
     const rankingPos = await buscarRankingUsuario(userId);
     const cardResult = carta.imagem_url
-      ? await gerarCardImagem(carta.imagem_url, carta.personagem, carta.vinculo, carta.raridade, carta.categoria, carta.genero ?? 'outros', carta.descricao ?? null, pts, rankingPos)
+      ? await gerarCardImagem(
+          carta.imagem_url,
+          carta.personagem,
+          carta.vinculo,
+          (carta as any).sub_vinculo ?? null,
+          carta.raridade,
+          carta.categoria,
+          carta.genero ?? 'outros',
+          carta.descricao ?? null,
+          pts,
+          rankingPos,
+          (carta as any).imagem_offset_x ?? 50,
+          (carta as any).imagem_offset_y ?? 50,
+          (carta as any).imagem_zoom ?? 100,
+        )
       : null;
 
     const textoSpawn = `🖐️ **Clique em Capturar para pegar essa carta!**`;
