@@ -301,9 +301,21 @@ async function gerarCardImagem(
         if (!ffmpegStatic) throw new Error('ffmpeg-static não disponível');
 
         const gifMeta = await sharp(imgBuf, { animated: true }).metadata();
-        const numFrames = Math.min(gifMeta.pages ?? 1, 20); // máx 20 frames
-
+        const totalFrames = gifMeta.pages ?? 1;
         const rawDelays = Array.isArray(gifMeta.delay) ? gifMeta.delay : [];
+
+        // Inclui todos os frames até completar a duração total do GIF (máx 30s)
+        // Garante que GIFs de 10s mostrem os 10s completos, não apenas 3s
+        const MAX_DURACAO_MS = 30_000;
+        let numFrames = 0;
+        let duracaoAcumulada = 0;
+        for (let i = 0; i < totalFrames; i++) {
+          const d = Math.max(rawDelays[i] ?? rawDelays[rawDelays.length - 1] ?? 100, 20);
+          duracaoAcumulada += d;
+          numFrames++;
+          if (duracaoAcumulada >= MAX_DURACAO_MS) break;
+        }
+
         const frameDelays = Array.from({ length: numFrames }, (_, i) => {
           const d = rawDelays[i] ?? rawDelays[rawDelays.length - 1] ?? 100;
           return Math.max(d, 20);
