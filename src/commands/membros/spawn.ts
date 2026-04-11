@@ -150,8 +150,18 @@ async function gerarCardImagem(
   zoom: number,
 ): Promise<CardResult | null> {
   try {
-    const res = await fetch(imagemUrl);
-    if (!res.ok) return null;
+    const controller = new AbortController();
+    const fetchTimeout = setTimeout(() => controller.abort(), 10_000);
+    let res: Response;
+    try {
+      res = await fetch(imagemUrl, { signal: controller.signal });
+    } finally {
+      clearTimeout(fetchTimeout);
+    }
+    if (!res.ok) {
+      console.error(`[spawn] imagem retornou ${res.status}: ${imagemUrl}`);
+      return null;
+    }
     const imgBuf = Buffer.from(await res.arrayBuffer());
     if (imgBuf.length === 0) return null;
 
@@ -398,7 +408,7 @@ async function gerarCardImagem(
     return { buffer, ext: 'png' };
 
   } catch (err: any) {
-    console.error('[spawn] erro ao gerar card:', err?.message);
+    console.error(`[spawn] erro ao gerar card (${imagemUrl.substring(0, 80)}):`, err?.message ?? err);
     return null;
   }
 }
@@ -487,7 +497,7 @@ async function verificarCaptura(
 async function sortearCarta(categoria?: string | null, genero?: string | null) {
   let query = supabase
     .from('cartas')
-    .select('id, nome, personagem, vinculo, sub_vinculo, categoria, raridade, imagem_url, descricao, genero, imagem_offset_x, imagem_offset_y, imagem_zoom')
+    .select('id, nome, personagem, vinculo, sub_vinculo, categoria, raridade, imagem_url, imagens, descricao, genero, imagem_offset_x, imagem_offset_y, imagem_zoom')
     .eq('ativa', true);
 
   if (categoria) query = query.eq('categoria', categoria);
@@ -528,10 +538,14 @@ export const execute = async (interaction: ChatInputCommandInteraction) => {
     const pts = calcPts(carta.raridade, carta.personagem, carta.vinculo);
     const emoji = EMOJI_RARIDADE[carta.raridade] ?? '❓';
 
+    // Usa imagens[] como prioridade (igual ao site), cai em imagem_url como fallback
+    const imagens: string[] = (carta as any).imagens ?? [];
+    const imagemUrl: string | null = imagens[0] || carta.imagem_url || null;
+
     const rankingPos = await buscarRankingUsuario(userId);
-    const cardResult = carta.imagem_url
+    const cardResult = imagemUrl
       ? await gerarCardImagem(
-          carta.imagem_url,
+          imagemUrl,
           carta.personagem,
           carta.vinculo,
           (carta as any).sub_vinculo ?? null,
@@ -556,13 +570,28 @@ export const execute = async (interaction: ChatInputCommandInteraction) => {
         .setStyle(ButtonStyle.Success),
     );
 
-    const msg = cardResult
-      ? await interaction.editReply({
-          content: textoSpawn,
-          files: [new AttachmentBuilder(cardResult.buffer, { name: `carta-${carta.id}.${cardResult.ext}` })],
-          components: [row],
-        })
-      : await interaction.editReply({ content: textoSpawn, components: [row] });
+    let msg;
+    if (cardResult) {
+      // Card gerado com sucesso — envia como arquivo
+      msg = await interaction.editReply({
+        content: textoSpawn,
+        files: [new AttachmentBuilder(cardResult.buffer, { name: `carta-${carta.id}.${cardResult.ext}` })],
+        components: [row],
+      });
+    } else if (imagemUrl) {
+      // Falha ao gerar card — fallback: embed com imagem bruta
+      const { EmbedBuilder } = await import('discord.js');
+      const cor = COR_RARIDADE[carta.raridade] || '#9CA3AF';
+      const embed = new EmbedBuilder()
+        .setColor(cor as any)
+        .setTitle(`${EMOJI_RARIDADE[carta.raridade] ?? '❓'} ${carta.personagem}`)
+        .setDescription(`**${carta.vinculo}**`)
+        .setImage(imagemUrl);
+      msg = await interaction.editReply({ content: textoSpawn, embeds: [embed], components: [row] });
+    } else {
+      // Sem imagem alguma
+      msg = await interaction.editReply({ content: textoSpawn, components: [row] });
+    }
 
     const collector = msg.createMessageComponentCollector({ time: 60_000 });
 
