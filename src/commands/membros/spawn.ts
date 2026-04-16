@@ -743,7 +743,7 @@ function buildRows(
     const navRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
       new ButtonBuilder()
         .setCustomId(`nav_${cartaId}_${imgIdx}_prev`)
-        .setEmoji('◀️')
+        .setLabel('◀')
         .setStyle(ButtonStyle.Secondary)
         .setDisabled(imgIdx === 0),
       new ButtonBuilder()
@@ -753,7 +753,7 @@ function buildRows(
         .setDisabled(true),
       new ButtonBuilder()
         .setCustomId(`nav_${cartaId}_${imgIdx}_next`)
-        .setEmoji('▶️')
+        .setLabel('▶')
         .setStyle(ButtonStyle.Secondary)
         .setDisabled(imgIdx === totalImgs - 1),
     );
@@ -848,7 +848,12 @@ export const execute = async (interaction: ChatInputCommandInteraction) => {
         })
       : await interaction.editReply({ content: textoSpawn, components: rows });
 
-    const collector = msg.createMessageComponentCollector({ time: 60_000 });
+    // Carta com dono: até 10 min para navegar/level up. Carta livre: 60s para capturar.
+    const collectorTime = donoCarta ? 10 * 60_000 : 60_000;
+    const collector = msg.createMessageComponentCollector({ time: collectorTime });
+
+    // Impede múltiplos level-ups na mesma aparição
+    let levelUpUsado = false;
 
     collector.on('collect', async (btn) => {
       const customId = btn.customId;
@@ -924,6 +929,7 @@ export const execute = async (interaction: ChatInputCommandInteraction) => {
       if (customId.startsWith('levelup_')) {
         const cartaId = customId.split('_')[1];
 
+        // Só o dono pode fazer level up
         const { data: prop } = await supabase
           .from('cartas_usuarios')
           .select('id, discord_id, nivel')
@@ -932,11 +938,21 @@ export const execute = async (interaction: ChatInputCommandInteraction) => {
 
         if (!prop || prop.discord_id !== btn.user.id) {
           await btn.reply({
-            content: '❌ Esta carta não é sua! Apenas o dono pode fazer level up.',
+            content: '🔒 Apenas o dono desta carta pode fazer Level Up.',
             flags: MessageFlags.Ephemeral,
           });
           return;
         }
+
+        // Um único Level Up por aparição
+        if (levelUpUsado) {
+          await btn.reply({
+            content: '⚡ Você já fez Level Up nesta aparição. Aguarde a próxima!',
+            flags: MessageFlags.Ephemeral,
+          });
+          return;
+        }
+        levelUpUsado = true;
 
         const novoNivel = prop.nivel + 1;
         await supabase
@@ -949,8 +965,12 @@ export const execute = async (interaction: ChatInputCommandInteraction) => {
           flags: MessageFlags.Ephemeral,
         });
 
-        // Atualiza texto e botões da mensagem (sem trocar a imagem)
+        // Atualiza mensagem: botão Level Up desabilitado para evitar cliques adicionais
         const newRows = buildRows(cartaId, prop.discord_id, novoNivel, 0, imagens.length);
+        // Desabilita o botão de Level Up após uso
+        if (newRows[0]?.components[0]) {
+          (newRows[0].components[0] as ButtonBuilder).setDisabled(true).setLabel(`✅ Nível ${novoNivel} (usado)`);
+        }
         await interaction.editReply({
           content: `🔒 Esta carta pertence a <@${prop.discord_id}> · **Nível ${novoNivel}**`,
           components: newRows,
